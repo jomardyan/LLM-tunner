@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-tunner"
+version = "0.1.0"
+description = "Desktop GUI to customize open LLMs with PDF knowledge (RAG-first, optional QLoRA fine-tuning)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "LLM-tunner contributors" }]
+keywords = ["llm", "rag", "fine-tuning", "qlora", "pdf", "pyside6", "gui"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Environment :: X11 Applications :: Qt",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core dependencies. Heavy ML extras live in [project.optional-dependencies] so the
+# GUI can install and launch on machines without a full training stack.
+dependencies = [
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13",
+    "pypdf>=4.0",
+]
+
+[project.optional-dependencies]
+# RAG knowledge path (works on CPU/MPS/CUDA).
+rag = [
+    "torch>=2.3",
+    "sentence-transformers>=3.0",
+    "llama-index>=0.11",
+    "llama-index-vector-stores-chroma",
+    "llama-index-embeddings-huggingface",
+    "llama-index-llms-huggingface",
+    "chromadb>=0.5",
+    "docling>=2.0",
+    "transformers>=4.44",
+    "huggingface-hub>=0.24",
+]
+# Fine-tuning path (transformers + PEFT + TRL).
+train = [
+    "torch>=2.3",
+    "transformers>=4.44",
+    "peft>=0.12",
+    "trl>=0.9",
+    "datasets>=2.20",
+    "accelerate>=0.33",
+    "matplotlib>=3.8",
+    "huggingface-hub>=0.24",
+]
+# 4-bit QLoRA backend. CUDA only; declared as an explicit opt-in extra.
+gpu = [
+    "bitsandbytes>=0.43; platform_system == 'Linux'",
+]
+# Everything for a full local install.
+all = [
+    "llm-tunner[rag,train]",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+llm-tunner = "llm_tunner.app:main"
+
+[project.gui-scripts]
+llm-tunner-gui = "llm_tunner.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+llm_tunner = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
