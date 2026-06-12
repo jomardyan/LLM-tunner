@@ -16,10 +16,6 @@ trl>=0.16.1
 datasets>=2.20
 accelerate>=0.33
 sentence-transformers>=3.0
-llama-index>=0.11
-llama-index-vector-stores-chroma
-llama-index-embeddings-huggingface
-llama-index-llms-huggingface
 chromadb>=0.5
 docling>=2.0
 huggingface-hub>=0.24

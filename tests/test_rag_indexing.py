@@ -6,6 +6,9 @@ from llm_tunner.core.rag import (
     _chunk_id,
     _collection_name,
     _storage_name,
+    missing_rag_dependencies,
+    rag_install_command,
+    require_rag_dependencies,
 )
 
 
@@ -46,6 +49,20 @@ def test_storage_name_is_windows_safe_and_bounded():
     second = _storage_name("a" * 99 + "b")
     assert len(first) <= 64
     assert first != second
+
+
+def test_rag_dependency_error_lists_missing_packages(monkeypatch):
+    monkeypatch.setattr(
+        "llm_tunner.core.rag.importlib.util.find_spec",
+        lambda module: None if module in {"chromadb", "sentence_transformers"} else object(),
+    )
+    assert missing_rag_dependencies() == ["chromadb", "sentence-transformers"]
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match=r'pip install -e "\.\[rag\]"'):
+        require_rag_dependencies()
+    assert "python" in rag_install_command().lower()
 
 
 def test_chunk_ids_do_not_collide_for_same_basename():

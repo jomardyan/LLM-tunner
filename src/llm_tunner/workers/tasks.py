@@ -31,8 +31,9 @@ def ingest_pdf_task(pdf_path: str, *, signals) -> dict:
 def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals) -> dict:
     """Embed and index a list of PDFs into a named knowledge base."""
     from ..config import RagConfig
-    from ..core.rag import RagIndex
+    from ..core.rag import RagIndex, require_rag_dependencies
 
+    require_rag_dependencies()
     config = RagConfig(embedding_model=embedding_model)
     index = RagIndex(kb_name, config=config)
     total_chunks = 0
@@ -47,8 +48,9 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
     """Answer a query against a knowledge base with citations."""
     from ..config import RagConfig
     from ..core.inference import ChatModel
-    from ..core.rag import RagIndex
+    from ..core.rag import RagIndex, require_rag_dependencies
 
+    require_rag_dependencies()
     signals.log.emit("Loading model…")
     model = ChatModel(model_id, adapter_path=adapter_path)
     index = RagIndex(kb_name, config=RagConfig(embedding_model=embedding_model, top_k=top_k))

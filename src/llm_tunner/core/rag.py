@@ -11,13 +11,49 @@ GUI launches without them; a clear error is raised only when RAG is actually use
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import RagConfig, kb_dir
 from .chunking import Chunk, chunk_document
 from .pdf import ExtractedDoc, extract_pdf
+
+_RAG_MODULES = {
+    "chromadb": "chromadb",
+    "sentence_transformers": "sentence-transformers",
+}
+
+
+def missing_rag_dependencies() -> list[str]:
+    """Return missing distribution names required by the RAG pipeline."""
+    return [
+        distribution
+        for module, distribution in _RAG_MODULES.items()
+        if importlib.util.find_spec(module) is None
+    ]
+
+
+def rag_install_command() -> str:
+    """Return an install command targeting the interpreter running the app."""
+    return f'"{sys.executable}" -m pip install -e ".[rag]"'
+
+
+def require_rag_dependencies() -> None:
+    """Fail with actionable installation guidance when RAG extras are absent."""
+    missing = missing_rag_dependencies()
+    if not missing:
+        return
+
+    names = ", ".join(missing)
+    raise RuntimeError(
+        f"RAG dependencies are not installed: {names}. "
+        f"Install them in the Python environment running this app with: "
+        f"{rag_install_command()} "
+        "(or run: make install-rag), then restart the app."
+    )
 
 
 @dataclass
@@ -96,6 +132,7 @@ class Embedder:
 
     def _load(self):
         if self._model is None:
+            require_rag_dependencies()
             from sentence_transformers import SentenceTransformer  # type: ignore
 
             from .device import detect_device
@@ -128,6 +165,7 @@ class RagIndex:
     # -- storage ------------------------------------------------------------------
     def _coll(self):
         if self._collection is None:
+            require_rag_dependencies()
             import chromadb  # type: ignore
 
             self._client = chromadb.PersistentClient(path=str(self.path))

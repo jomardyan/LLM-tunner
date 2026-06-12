@@ -116,6 +116,17 @@ For a minimal GUI-only installation on any supported platform:
 
 ```bash
 python -m pip install -e .
+# With GNU Make:
+make install-minimal
+```
+
+The minimal installation can preview PDFs but does not include RAG or training. Install
+only the RAG stack with:
+
+```bash
+python -m pip install -e ".[rag]"
+# With GNU Make:
+make install-rag
 ```
 
 ## Run
@@ -146,20 +157,27 @@ GNU Make is available:
 ```bash
 make help
 make setup
+make install
 make check
 make run
 ```
 
-All targets use `python -m ...` and avoid shell-specific commands. Override the
-interpreter or virtual-environment directory when needed:
+The Makefile creates and uses `.venv` automatically, so activation is not required and
+packages are not installed into the global or Microsoft Store Python user directory.
+`make install` is the master runtime installation command: it installs the GUI, PDF
+processing, RAG, training, and the platform-supported QLoRA backend. The legacy
+`make install-all` and `make install-gpu` targets are aliases for the same command.
+Override the bootstrap interpreter or virtual-environment directory when needed:
 
 ```powershell
-make check PYTHON="C:\path\to\.venv\Scripts\python.exe"
+make setup PYTHON=py
 make setup VENV="C:\venvs\llm-tunner"
+make check VENV="C:\venvs\llm-tunner"
 ```
 
 ```bash
-make check PYTHON=.venv/bin/python
+make setup PYTHON=python3.11 VENV=/opt/venvs/llm-tunner
+make check VENV=/opt/venvs/llm-tunner
 ```
 
 The RAG and training smoke tests activate automatically when their extras are installed.

@@ -69,9 +69,20 @@ class RagTab(QWidget):
         self.embed_label.setText(self.window.state.embedding_model)
 
     def _build(self) -> None:
+        from ..core.rag import missing_rag_dependencies, rag_install_command
+
         pdfs = list(self.window.state.documents)
         if not pdfs:
             self.window.notify("Add PDFs in the Documents tab first.")
+            return
+        missing = missing_rag_dependencies()
+        if missing:
+            message = (
+                f"RAG dependencies are not installed: {', '.join(missing)}. "
+                f"Run: {rag_install_command()}"
+            )
+            self.log.appendPlainText(f"ERROR: {message}")
+            self.window.notify(message, 10000)
             return
         name = self.kb_name.text().strip() or "my_knowledge_base"
         self.build_btn.setEnabled(False)

@@ -23,6 +23,13 @@ from pathlib import Path
 from ..config import TrainConfig, adapters_dir
 from .device import detect_device
 
+_FALLBACK_CHAT_TEMPLATE = (
+    "{% for message in messages %}"
+    "{{ message['role'] | capitalize }}: {{ message['content'] }}\n"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}Assistant: {% endif %}"
+)
+
 
 @dataclass
 class TrainMetric:
@@ -131,6 +138,8 @@ def run_finetune(
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if not tokenizer.chat_template:
+        tokenizer.chat_template = _FALLBACK_CHAT_TEMPLATE
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
@@ -159,6 +168,9 @@ def run_finetune(
         num_train_epochs=config.num_train_epochs,
         logging_steps=config.logging_steps,
         max_length=config.max_seq_length,
+        use_cpu=info.kind == "cpu",
+        bf16=info.kind == "cuda" and torch.cuda.is_bf16_supported(),
+        fp16=False,
         report_to=[],
         save_strategy="no",
     )
