@@ -84,3 +84,11 @@ class Settings:
     @top_k.setter
     def top_k(self, v: int) -> None:
         self.set("top_k", int(v))
+
+    @property
+    def last_kb(self) -> str:
+        return str(self.get("last_kb"))
+
+    @last_kb.setter
+    def last_kb(self, v: str) -> None:
+        self.set("last_kb", v)

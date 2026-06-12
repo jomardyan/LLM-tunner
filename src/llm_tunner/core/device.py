@@ -76,10 +76,11 @@ def _import_torch():
 
 
 def _bitsandbytes_available() -> bool:
+    """Return whether bitsandbytes loaded a CUDA-capable native library."""
     try:
-        import importlib.util
+        from bitsandbytes.cextension import lib  # type: ignore
 
-        return importlib.util.find_spec("bitsandbytes") is not None
+        return bool(getattr(lib, "compiled_with_cuda", False))
     except Exception:  # pragma: no cover
         return False
 
@@ -100,8 +101,6 @@ def detect_device() -> DeviceInfo:
             bnb_available=False,
         )
 
-    bnb = _bitsandbytes_available()
-
     # CUDA
     try:
         if torch.cuda.is_available():
@@ -112,7 +111,7 @@ def detect_device() -> DeviceInfo:
                 name=props.name,
                 total_vram_gb=props.total_memory / (1024**3),
                 torch_available=True,
-                bnb_available=bnb,
+                bnb_available=_bitsandbytes_available(),
             )
     except Exception:  # pragma: no cover - driver quirks
         pass

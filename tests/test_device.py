@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from llm_tunner.core.device import detect_device, recommended_models
+import sys
+from types import ModuleType, SimpleNamespace
+
+from llm_tunner.core.device import (
+    _bitsandbytes_available,
+    detect_device,
+    recommended_models,
+)
 
 
 def test_detect_returns_known_kind():
@@ -17,3 +24,15 @@ def test_detect_returns_known_kind():
 def test_recommended_models_nonempty():
     assert recommended_models() == recommended_models()  # cached/stable
     assert len(recommended_models()) >= 1
+
+
+def test_bitsandbytes_requires_cuda_native_library(monkeypatch):
+    package = ModuleType("bitsandbytes")
+    extension = ModuleType("bitsandbytes.cextension")
+    extension.lib = SimpleNamespace(compiled_with_cuda=False)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", package)
+    monkeypatch.setitem(sys.modules, "bitsandbytes.cextension", extension)
+    assert not _bitsandbytes_available()
+
+    extension.lib = SimpleNamespace(compiled_with_cuda=True)
+    assert _bitsandbytes_available()

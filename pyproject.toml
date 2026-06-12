@@ -15,6 +15,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
+    "Environment :: Win32 (MS Windows)",
     "Environment :: X11 Applications :: Qt",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -22,7 +24,8 @@ classifiers = [
 # Core dependencies. Heavy ML extras live in [project.optional-dependencies] so the
 # GUI can install and launch on machines without a full training stack.
 dependencies = [
-    "PySide6>=6.7",
+    "PySide6-Essentials>=6.7,<6.10; platform_system == 'Windows'",
+    "PySide6-Essentials>=6.7; platform_system != 'Windows'",
     "pyqtgraph>=0.13",
     "pypdf>=4.0",
 ]
@@ -46,7 +49,7 @@ train = [
     "torch>=2.3",
     "transformers>=4.44",
     "peft>=0.12",
-    "trl>=0.9",
+    "trl>=0.16.1",
     "datasets>=2.20",
     "accelerate>=0.33",
     "matplotlib>=3.8",
@@ -54,7 +57,7 @@ train = [
 ]
 # 4-bit QLoRA backend. CUDA only; declared as an explicit opt-in extra.
 gpu = [
-    "bitsandbytes>=0.43; platform_system == 'Linux'",
+    "bitsandbytes>=0.49; platform_system == 'Linux' or (platform_system == 'Windows' and platform_machine == 'AMD64')",
 ]
 # Everything for a full local install.
 all = [
@@ -88,3 +91,4 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src"]

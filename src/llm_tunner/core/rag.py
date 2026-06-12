@@ -10,6 +10,7 @@ GUI launches without them; a clear error is raised only when RAG is actually use
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,44 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", name).strip("_").lower() or "kb"
 
 
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+
+def _bounded_slug(name: str, max_length: int) -> str:
+    slug = _slug(name).strip("-_") or "kb"
+    if slug in _WINDOWS_RESERVED_NAMES:
+        slug = f"kb-{slug}"
+    if len(slug) > max_length:
+        digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:10]
+        slug = f"{slug[: max_length - len(digest) - 1].rstrip('-_')}-{digest}"
+    return slug
+
+
+def _storage_name(name: str) -> str:
+    """Return a short cross-platform directory name, safe on Windows filesystems."""
+    return _bounded_slug(name, 64)
+
+
+def _collection_name(name: str) -> str:
+    """Return a Chroma-compatible collection name, including for short user input."""
+    slug = _bounded_slug(name, 63)
+    if len(slug) < 3:
+        slug = f"{slug or 'kb'}-index"
+    return slug
+
+
+def _chunk_id(chunk: Chunk) -> str:
+    source_hash = hashlib.sha256(chunk.source.encode("utf-8")).hexdigest()[:16]
+    return f"{source_hash}-{chunk.page_number}-{chunk.index}"
+
+
 class Embedder:
     """Lazily-loaded sentence-transformers wrapper, device-aware."""
 
@@ -81,7 +120,7 @@ class RagIndex:
     def __init__(self, name: str, config: RagConfig | None = None) -> None:
         self.name = name
         self.config = config or RagConfig()
-        self.path = kb_dir() / _slug(name)
+        self.path = kb_dir() / _storage_name(name)
         self._embedder = Embedder(self.config.embedding_model)
         self._client = None
         self._collection = None
@@ -92,17 +131,27 @@ class RagIndex:
             import chromadb  # type: ignore
 
             self._client = chromadb.PersistentClient(path=str(self.path))
-            self._collection = self._client.get_or_create_collection(
-                name=_slug(self.name),
+            collection = self._client.get_or_create_collection(
+                name=_collection_name(self.name),
                 metadata={"hnsw:space": "cosine", "embedding_model": self.config.embedding_model},
             )
+            metadata = collection.metadata or {}
+            stored_model = metadata.get("embedding_model")
+            if (
+                collection.count() > 0
+                and stored_model
+                and stored_model != self.config.embedding_model
+            ):
+                raise ValueError(
+                    f"Knowledge base '{self.name}' uses embedding model '{stored_model}', "
+                    f"not '{self.config.embedding_model}'. Select the original model or "
+                    "build a new knowledge base."
+                )
+            self._collection = collection
         return self._collection
 
     def count(self) -> int:
-        try:
-            return self._coll().count()
-        except Exception:
-            return 0
+        return self._coll().count()
 
     # -- ingestion ----------------------------------------------------------------
     def add_pdf(self, pdf_path: str | Path, progress=None) -> int:
@@ -120,11 +169,19 @@ class RagIndex:
         coll = self._coll()
         batch = 64
         total = len(chunks)
+        existing_ids: dict[str, set[str]] = {}
+        new_ids: dict[str, set[str]] = {}
+        for chunk in chunks:
+            new_ids.setdefault(chunk.source, set()).add(_chunk_id(chunk))
+        for source in new_ids:
+            existing = coll.get(where={"source": source}, include=[])
+            existing_ids[source] = set(existing.get("ids", []))
+
         for start in range(0, total, batch):
             window = chunks[start : start + batch]
             embeddings = self._embedder.encode([c.text for c in window])
-            coll.add(
-                ids=[f"{_slug(Path(c.source).name)}-{c.page_number}-{c.index}" for c in window],
+            coll.upsert(
+                ids=[_chunk_id(c) for c in window],
                 documents=[c.text for c in window],
                 embeddings=embeddings,
                 metadatas=[
@@ -134,6 +191,11 @@ class RagIndex:
             )
             if progress:
                 progress(min(start + batch, total), total, f"Embedded {min(start + batch, total)}/{total} chunks")
+
+        for source, old_ids in existing_ids.items():
+            stale_ids = sorted(old_ids - new_ids[source])
+            if stale_ids:
+                coll.delete(ids=stale_ids)
         return total
 
     # -- retrieval ----------------------------------------------------------------

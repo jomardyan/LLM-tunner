@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from llm_tunner.core.chunking import Chunk
 from llm_tunner.core.dataset import load_jsonl, save_jsonl, to_messages
-from llm_tunner.core.qa_gen import generate_qa, heuristic_generator
+from llm_tunner.core.qa_gen import _parse_pairs, generate_qa, heuristic_generator
 
 
 def test_heuristic_generator():
@@ -27,3 +27,12 @@ def test_generate_and_format(tmp_path):
 
     path = save_jsonl(rows, "test_ds")
     assert load_jsonl(path) == rows
+
+
+def test_parse_pairs_ignores_unrelated_brackets():
+    raw = (
+        "Use only the passage [important].\n"
+        '[{"question": "Capital?", "answer": "Paris"}]\n'
+        "Done."
+    )
+    assert _parse_pairs(raw) == [("Capital?", "Paris")]

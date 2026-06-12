@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         self.state = AppState(
             base_model=self.settings.base_model,
             embedding_model=self.settings.embedding_model,
+            current_kb=self.settings.last_kb,
         )
         self.pool = QThreadPool.globalInstance()
         self.device = detect_device()

@@ -62,18 +62,22 @@ def heuristic_generator(passage: str) -> list[tuple[str, str]]:
 
 def _parse_pairs(raw: str) -> list[tuple[str, str]]:
     """Best-effort extraction of [{question, answer}] from an LLM response."""
-    match = re.search(r"\[.*\]", raw, re.DOTALL)
-    if not match:
-        return []
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
-    pairs: list[tuple[str, str]] = []
-    for item in data:
-        if isinstance(item, dict) and item.get("question") and item.get("answer"):
-            pairs.append((str(item["question"]).strip(), str(item["answer"]).strip()))
-    return pairs
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\[", raw):
+        try:
+            data, _end = decoder.raw_decode(raw[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, list):
+            continue
+
+        pairs: list[tuple[str, str]] = []
+        for item in data:
+            if isinstance(item, dict) and item.get("question") and item.get("answer"):
+                pairs.append((str(item["question"]).strip(), str(item["answer"]).strip()))
+        if pairs:
+            return pairs
+    return []
 
 
 def generate_qa(

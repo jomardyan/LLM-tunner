@@ -21,6 +21,23 @@ class GenerationConfig:
     do_sample: bool = True
 
 
+def _format_messages(tokenizer, messages: list[dict]) -> str:
+    """Apply a native chat template, with a plain-text fallback for base tokenizers."""
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    lines = [
+        f"{str(message.get('role', 'user')).capitalize()}: {message.get('content', '')}"
+        for message in messages
+    ]
+    lines.append("Assistant:")
+    return "\n".join(lines)
+
+
 class ChatModel:
     """A loaded causal LM + tokenizer, with optional LoRA adapter."""
 
@@ -63,7 +80,7 @@ class ChatModel:
         self._ensure()
         config = config or GenerationConfig()
         tok = self._tokenizer
-        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt = _format_messages(tok, messages)
         inputs = tok(prompt, return_tensors="pt").to(self._model.device)
         with torch.no_grad():
             out = self._model.generate(

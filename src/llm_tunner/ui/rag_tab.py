@@ -99,6 +99,7 @@ class RagTab(QWidget):
 
     def _on_done(self, result: dict) -> None:
         self.window.state.current_kb = result["kb"]
+        self.window.settings.last_kb = result["kb"]
         self.log.appendPlainText(
             f"Done. {result['chunks']} chunks indexed; collection now holds {result['count']}."
         )

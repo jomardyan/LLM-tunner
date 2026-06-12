@@ -1,9 +1,10 @@
 # LLM-tunner runtime dependencies.
 # For a minimal GUI-only install, `pip install -e .` is enough (PySide6 + pyqtgraph + pypdf).
-# For the full app, install the extras: `pip install -e ".[all]"` (add ".[gpu]" on CUDA hosts).
+# For the full app, install the extras: `pip install -e ".[all]"` (add ".[gpu]" on NVIDIA CUDA hosts).
 
 # --- GUI (always required) ---
-PySide6>=6.7
+PySide6-Essentials>=6.7,<6.10; platform_system == "Windows"
+PySide6-Essentials>=6.7; platform_system != "Windows"
 pyqtgraph>=0.13
 pypdf>=4.0
 
@@ -11,7 +12,7 @@ pypdf>=4.0
 torch>=2.3
 transformers>=4.44
 peft>=0.12
-trl>=0.9
+trl>=0.16.1
 datasets>=2.20
 accelerate>=0.33
 sentence-transformers>=3.0
@@ -24,5 +25,5 @@ docling>=2.0
 huggingface-hub>=0.24
 matplotlib>=3.8
 
-# --- 4-bit QLoRA backend (CUDA only; optional) ---
-bitsandbytes>=0.43; platform_system == "Linux"
+# --- 4-bit QLoRA backend (NVIDIA CUDA; optional on Linux and Windows x64) ---
+bitsandbytes>=0.49; platform_system == "Linux" or (platform_system == "Windows" and platform_machine == "AMD64")

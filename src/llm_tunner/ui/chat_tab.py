@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
@@ -60,10 +62,13 @@ class ChatTab(QWidget):
     def refresh_kb(self) -> None:
         self.kb_label.setText(self.window.state.current_kb or "(none)")
         adapter = self.window.state.adapter_path
-        self.adapter_label.setText(f"adapter: {adapter.split('/')[-1] if adapter else 'none'}")
+        self.adapter_label.setText(f"adapter: {Path(adapter).name if adapter else 'none'}")
 
-    def _append(self, role: str, text: str) -> None:
-        self.transcript.append(f"<b>{role}:</b> {text}<br>")
+    def _append(self, role: str, text: str, sources: str = "") -> None:
+        safe_role = html.escape(role)
+        safe_text = html.escape(text).replace("\n", "<br>")
+        source_html = f"<br><i>Sources: {html.escape(sources)}</i>" if sources else ""
+        self.transcript.append(f"<b>{safe_role}:</b> {safe_text}{source_html}<br>")
 
     def _send(self) -> None:
         query = self.input.text().strip()
@@ -105,7 +110,7 @@ class ChatTab(QWidget):
     def _on_answer(self, result: dict, query: str | None = None) -> None:
         answer = result.get("answer", "")
         sources = result.get("sources", "")
-        self._append("Assistant", answer + (f"<br><i>Sources: {sources}</i>" if sources else ""))
+        self._append("Assistant", answer, sources)
         if query is not None:
             self.history.append({"role": "user", "content": query})
             self.history.append({"role": "assistant", "content": answer})

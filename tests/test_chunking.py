@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from llm_tunner.config import ChunkConfig
 from llm_tunner.core.chunking import chunk_text
 
@@ -26,3 +28,29 @@ def test_deterministic():
 
 def test_empty_text():
     assert chunk_text("   ", ChunkConfig()) == []
+
+
+def test_overlap_does_not_exceed_chunk_size():
+    cfg = ChunkConfig(chunk_size=20, chunk_overlap=8)
+    chunks = chunk_text(
+        "one two three four five six seven eight nine ten eleven twelve",
+        cfg,
+    )
+    assert len(chunks) > 1
+    assert all(len(chunk) <= cfg.chunk_size for chunk in chunks)
+    assert any(
+        current.startswith(previous.split()[-1] + " ")
+        for previous, current in zip(chunks, chunks[1:], strict=False)
+    )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        ChunkConfig(chunk_size=0),
+        ChunkConfig(chunk_overlap=-1),
+    ],
+)
+def test_invalid_config_rejected(config):
+    with pytest.raises(ValueError):
+        chunk_text("text", config)

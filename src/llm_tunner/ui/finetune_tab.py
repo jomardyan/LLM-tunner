@@ -100,6 +100,7 @@ class FineTuneTab(QWidget):
             on_progress=self._on_progress,
             on_log=self.log.appendPlainText,
             on_result=self._on_dataset,
+            on_error=self._on_error,
             on_finished=lambda: (self.gen_btn.setEnabled(True), self.progress.setVisible(False)),
         )
 
