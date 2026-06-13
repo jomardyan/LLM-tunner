@@ -22,6 +22,33 @@ class GenerationConfig:
     do_sample: bool = True
 
 
+def ensure_pad_token(tokenizer):
+    """Make sure ``tokenizer.pad_token`` is set, falling back to eos then bos.
+
+    Some base tokenizers ship without a pad token (and occasionally without an eos
+    token too), which makes batching/generation fail later with an opaque error. This
+    pure helper picks a usable pad token, preferring an existing ``pad_token``, then
+    ``eos_token``, then ``bos_token``. It works on any duck-typed object exposing those
+    attributes and never imports transformers.
+
+    Raises:
+        RuntimeError: if the tokenizer has no usable pad/eos/bos token.
+    """
+    if getattr(tokenizer, "pad_token", None) is not None:
+        return
+    eos_token = getattr(tokenizer, "eos_token", None)
+    if eos_token is not None:
+        tokenizer.pad_token = eos_token
+        return
+    bos_token = getattr(tokenizer, "bos_token", None)
+    if bos_token is not None:
+        tokenizer.pad_token = bos_token
+        return
+    raise RuntimeError(
+        "This model/tokenizer has no usable pad/eos/bos token; cannot set a pad token."
+    )
+
+
 def _format_messages(tokenizer, messages: list[dict]) -> str:
     """Apply a native chat template, with a plain-text fallback for base tokenizers."""
     if getattr(tokenizer, "chat_template", None):
@@ -57,6 +84,7 @@ class ChatModel:
         dtype = torch.bfloat16 if info.kind == "cuda" else torch.float32
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+        ensure_pad_token(self._tokenizer)
         device_map = "auto" if info.kind == "cuda" else None
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_id, dtype=dtype, device_map=device_map
@@ -91,7 +119,7 @@ class ChatModel:
                 temperature=config.temperature,
                 top_p=config.top_p,
                 do_sample=config.do_sample,
-                pad_token_id=tok.eos_token_id,
+                pad_token_id=tok.pad_token_id,
             )
         generated = out[0][inputs["input_ids"].shape[1] :]
         return tok.decode(generated, skip_special_tokens=True).strip()
