@@ -187,7 +187,14 @@ def detect_device_isolated(timeout: float = 180) -> DeviceInfo:
         text=True,
         timeout=timeout,
     )
-    return DeviceInfo(**json.loads(result.stdout.strip().splitlines()[-1]))
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        raise RuntimeError(
+            "Device-detection subprocess produced no output. Check that the install is "
+            "intact (`make install`) and see ~/.llm-tunner/logs/native-crash.log."
+        )
+    # Take the last line: leading warning noise on stdout is tolerated.
+    return DeviceInfo(**json.loads(lines[-1]))
 
 
 def recommended_models(info: DeviceInfo | None = None) -> list[str]:
