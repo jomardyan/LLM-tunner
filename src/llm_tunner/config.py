@@ -76,6 +76,8 @@ class ChunkConfig:
 class RagConfig:
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     top_k: int = 4
+    # Drop retrieved chunks whose cosine similarity is below this (0.0 = keep all).
+    score_threshold: float = 0.0
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
 
 

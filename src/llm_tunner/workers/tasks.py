@@ -25,6 +25,19 @@ def _progress_cb(signals):
     return cb
 
 
+def _generation_config(temperature: float, top_p: float, max_new_tokens: int):
+    """Build a GenerationConfig from primitive params (greedy when temperature is 0)."""
+    from ..core.inference import GenerationConfig
+
+    temperature = float(temperature)
+    return GenerationConfig(
+        max_new_tokens=int(max_new_tokens),
+        temperature=temperature,
+        top_p=float(top_p),
+        do_sample=temperature > 0,
+    )
+
+
 def ingest_pdf_task(pdf_path: str, *, signals) -> dict:
     """Extract text from a PDF and return a preview + page count."""
     from ..core.pdf import extract_pdf
@@ -68,22 +81,41 @@ def huggingface_login_task(token: str, *, signals) -> dict:
     return {"authenticated": True}
 
 
+def download_model_task(model_id: str, *, signals) -> dict:
+    """Pre-download a model snapshot to the local Hugging Face cache."""
+    from ..core.models import download
+
+    started = time.perf_counter()
+    signals.log.emit(f"Downloading {model_id}…")
+    path = download(model_id, progress=_progress_cb(signals))
+    return {
+        "model_id": model_id,
+        "path": path,
+        "elapsed_seconds": time.perf_counter() - started,
+    }
+
+
 def _build_kb(
     kb_name: str,
     pdf_paths: list[str],
     embedding_model: str,
     *,
     signals,
+    chunk_size: int = 512,
+    chunk_overlap: int = 64,
 ) -> dict:
     """Embed and index PDFs in the current process."""
-    from ..config import RagConfig
+    from ..config import ChunkConfig, RagConfig
     from ..core.chunking import chunk_document
     from ..core.pdf import extract_pdf
     from ..core.rag import RagIndex, require_rag_dependencies
 
     started = time.perf_counter()
     require_rag_dependencies()
-    config = RagConfig(embedding_model=embedding_model)
+    config = RagConfig(
+        embedding_model=embedding_model,
+        chunk=ChunkConfig(chunk_size=int(chunk_size), chunk_overlap=int(chunk_overlap)),
+    )
     index = RagIndex(kb_name, config=config)
     total_chunks = 0
     total_pages = 0
@@ -151,6 +183,8 @@ def _build_kb_child(
     log_path: str,
     result_path: str,
     error_path: str,
+    chunk_size: int = 512,
+    chunk_overlap: int = 64,
 ) -> None:
     """Build a knowledge base on a process main thread for native Arrow safety."""
     from ..diagnostics import configure_crash_diagnostics, configure_logging
@@ -160,7 +194,14 @@ def _build_kb_child(
     configure_logging()
     signals = _ProcessSignals(Path(progress_path), Path(log_path))
     try:
-        result = _build_kb(kb_name, pdf_paths, embedding_model, signals=signals)
+        result = _build_kb(
+            kb_name,
+            pdf_paths,
+            embedding_model,
+            signals=signals,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
         _write_json(Path(result_path), result)
     except BaseException as exc:  # noqa: BLE001 - serialize child failures to the GUI
         _write_json(
@@ -190,6 +231,8 @@ def _build_kb_isolated(
     embedding_model: str,
     *,
     signals,
+    chunk_size: int = 512,
+    chunk_overlap: int = 64,
 ) -> dict:
     import multiprocessing
 
@@ -211,6 +254,8 @@ def _build_kb_isolated(
             str(log_path),
             str(result_path),
             str(error_path),
+            int(chunk_size),
+            int(chunk_overlap),
         ),
         name="llm-tunner-knowledge-builder",
     )
@@ -248,7 +293,8 @@ def _build_kb_isolated(
         shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
-def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals) -> dict:
+def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals,
+                  chunk_size: int = 512, chunk_overlap: int = 64) -> dict:
     """Embed and index PDFs, isolating Windows native ML imports from Qt threads."""
     if sys.platform == "win32":
         return _build_kb_isolated(
@@ -256,13 +302,25 @@ def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, s
             pdf_paths,
             embedding_model,
             signals=signals,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
-    return _build_kb(kb_name, pdf_paths, embedding_model, signals=signals)
+    return _build_kb(
+        kb_name, pdf_paths, embedding_model, signals=signals,
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+    )
 
 
 def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query: str,
-                   embedding_model: str, top_k: int, *, signals) -> dict:
-    """Answer a query against a knowledge base with citations."""
+                   embedding_model: str, top_k: int, *, signals,
+                   history: list[dict] | None = None, system_prompt: str = "",
+                   temperature: float = 0.7, top_p: float = 0.9,
+                   max_new_tokens: int = 512, score_threshold: float = 0.0) -> dict:
+    """Answer a query against a knowledge base with citations.
+
+    ``history`` enables multi-turn (conversational) retrieval and generation; the
+    generation/retrieval knobs are forwarded from the user's settings.
+    """
     from ..config import RagConfig
     from ..core.inference import ChatModel
     from ..core.rag import RagIndex, require_rag_dependencies
@@ -271,9 +329,15 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
     require_rag_dependencies()
     signals.log.emit("Loading model…")
     model = ChatModel(model_id, adapter_path=adapter_path)
-    index = RagIndex(kb_name, config=RagConfig(embedding_model=embedding_model, top_k=top_k))
+    index = RagIndex(kb_name, config=RagConfig(
+        embedding_model=embedding_model, top_k=top_k, score_threshold=score_threshold
+    ))
     signals.log.emit("Retrieving and generating…")
-    result = model.rag_answer(query, index, top_k=top_k)
+    result = model.rag_answer(
+        query, index, top_k=top_k,
+        config=_generation_config(temperature, top_p, max_new_tokens),
+        history=history, system_prompt=system_prompt,
+    )
     return {
         "answer": result.answer,
         "sources": result.formatted_sources(),
@@ -284,7 +348,9 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
 
 
 def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
-                    history: list[dict], *, signals) -> dict:
+                    history: list[dict], *, signals, system_prompt: str = "",
+                    temperature: float = 0.7, top_p: float = 0.9,
+                    max_new_tokens: int = 512) -> dict:
     """Chat with the model without retrieval."""
     from ..core.inference import ChatModel
 
@@ -292,7 +358,11 @@ def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
     signals.log.emit("Loading model…")
     model = ChatModel(model_id, adapter_path=adapter_path)
     signals.log.emit("Generating…")
-    answer = model.chat(query, history=history)
+    answer = model.chat(
+        query, history=history,
+        config=_generation_config(temperature, top_p, max_new_tokens),
+        system_prompt=system_prompt,
+    )
     return {
         "answer": answer,
         "sources": "",
@@ -389,6 +459,30 @@ def _write_json(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
+def _train_config(overrides: dict | None):
+    """Build a TrainConfig from primitive UI overrides (unset keys keep defaults)."""
+    from ..config import LoraConfig, TrainConfig
+
+    overrides = overrides or {}
+    lora = LoraConfig(
+        r=int(overrides.get("lora_r", LoraConfig.r)),
+        lora_alpha=int(overrides.get("lora_alpha", LoraConfig.lora_alpha)),
+        lora_dropout=float(overrides.get("lora_dropout", LoraConfig.lora_dropout)),
+    )
+    return TrainConfig(
+        learning_rate=float(overrides.get("learning_rate", TrainConfig.learning_rate)),
+        num_train_epochs=float(overrides.get("num_train_epochs", TrainConfig.num_train_epochs)),
+        per_device_train_batch_size=int(
+            overrides.get("per_device_train_batch_size", TrainConfig.per_device_train_batch_size)
+        ),
+        gradient_accumulation_steps=int(
+            overrides.get("gradient_accumulation_steps", TrainConfig.gradient_accumulation_steps)
+        ),
+        max_seq_length=int(overrides.get("max_seq_length", TrainConfig.max_seq_length)),
+        lora=lora,
+    )
+
+
 def _finetune_child(
     model_id: str,
     dataset_rows: list[dict],
@@ -397,6 +491,7 @@ def _finetune_child(
     stop_path: str,
     result_path: str,
     error_path: str,
+    train_overrides: dict | None = None,
 ) -> None:
     """Run the native ML stack outside the Qt process on Windows."""
     from ..core.training import run_finetune
@@ -446,6 +541,7 @@ def _finetune_child(
         run_finetune(
             model_id,
             dataset_rows,
+            config=_train_config(train_overrides),
             output_name=output_name,
             handle=handle,
             completion_callback=complete,
@@ -481,6 +577,7 @@ def _finetune_task_isolated(
     output_name: str,
     handle,
     signals,
+    train_overrides: dict | None = None,
 ) -> dict:
     import multiprocessing
 
@@ -502,6 +599,7 @@ def _finetune_task_isolated(
             str(stop_path),
             str(result_path),
             str(error_path),
+            train_overrides,
         ),
         name="llm-tunner-training",
     )
@@ -540,6 +638,7 @@ def _finetune_task_in_process(
     output_name: str,
     handle,
     signals,
+    train_overrides: dict | None = None,
 ) -> dict:
     """Run training directly on platforms without the Windows teardown issue."""
     import threading
@@ -563,7 +662,11 @@ def _finetune_task_in_process(
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
     try:
-        result = run_finetune(model_id, dataset_rows, output_name=output_name, handle=handle)
+        result = run_finetune(
+            model_id, dataset_rows,
+            config=_train_config(train_overrides),
+            output_name=output_name, handle=handle,
+        )
     finally:
         done.set()
         drainer.join(timeout=2)
@@ -583,13 +686,19 @@ def _finetune_task_in_process(
     }
 
 
-def finetune_task(model_id: str, dataset_rows: list[dict], output_name: str, handle, *, signals):
+def finetune_task(model_id: str, dataset_rows: list[dict], output_name: str, handle, *, signals,
+                  train_overrides: dict | None = None):
     """Run fine-tuning with live metrics and cooperative cancellation.
 
     Windows uses a dedicated process because CUDA/bitsandbytes teardown can terminate
-    the host process after a successful QLoRA save.
+    the host process after a successful QLoRA save. ``train_overrides`` carries the
+    user's hyperparameters (LR, epochs, batch, LoRA rank, …); unset keys keep defaults.
     """
     signals.log.emit(f"Starting fine-tune of {model_id}…")
     if sys.platform == "win32":
-        return _finetune_task_isolated(model_id, dataset_rows, output_name, handle, signals)
-    return _finetune_task_in_process(model_id, dataset_rows, output_name, handle, signals)
+        return _finetune_task_isolated(
+            model_id, dataset_rows, output_name, handle, signals, train_overrides
+        )
+    return _finetune_task_in_process(
+        model_id, dataset_rows, output_name, handle, signals, train_overrides
+    )

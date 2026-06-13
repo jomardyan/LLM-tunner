@@ -106,6 +106,8 @@ class RagTab(QWidget):
             name,
             pdfs,
             self.window.state.embedding_model,
+            chunk_size=self.window.settings.chunk_size,
+            chunk_overlap=self.window.settings.chunk_overlap,
             on_progress=self._on_progress,
             on_log=self.log.appendPlainText,
             on_result=self._on_done,

@@ -74,12 +74,15 @@ def test_knowledge_build_is_isolated_on_windows(monkeypatch):
     expected = {"kb": "docs", "chunks": 3}
     called = {}
 
-    def fake_isolated(kb_name, pdf_paths, embedding_model, *, signals):
+    def fake_isolated(kb_name, pdf_paths, embedding_model, *, signals,
+                      chunk_size=512, chunk_overlap=64):
         called.update(
             kb_name=kb_name,
             pdf_paths=pdf_paths,
             embedding_model=embedding_model,
             signals=signals,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
         return expected
 
@@ -87,7 +90,9 @@ def test_knowledge_build_is_isolated_on_windows(monkeypatch):
     monkeypatch.setattr(tasks.sys, "platform", "win32")
     monkeypatch.setattr(tasks, "_build_kb_isolated", fake_isolated)
 
-    result = tasks.build_kb_task("docs", ["one.pdf"], "embedder", signals=signals)
+    result = tasks.build_kb_task(
+        "docs", ["one.pdf"], "embedder", signals=signals, chunk_size=256, chunk_overlap=32
+    )
 
     assert result == expected
     assert called == {
@@ -95,4 +100,6 @@ def test_knowledge_build_is_isolated_on_windows(monkeypatch):
         "pdf_paths": ["one.pdf"],
         "embedding_model": "embedder",
         "signals": signals,
+        "chunk_size": 256,
+        "chunk_overlap": 32,
     }
