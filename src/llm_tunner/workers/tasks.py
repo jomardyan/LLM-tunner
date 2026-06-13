@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import sys
 import time
@@ -180,7 +181,12 @@ def _replay_json_lines(path: Path, offset: int, emit) -> int:
     with path.open("r", encoding="utf-8") as stream:
         stream.seek(offset)
         for line in stream:
-            emit(*json.loads(line))
+            try:
+                emit(*json.loads(line))
+            except RuntimeError:
+                # The GUI signal's C++ object was deleted (window closed).
+                # Stop replaying rather than surfacing a spurious failure.
+                return stream.tell()
         return stream.tell()
 
 
@@ -245,6 +251,10 @@ def _build_kb_isolated(
         if process.is_alive():
             process.terminate()
             process.join(timeout=5)
+            if process.is_alive():
+                # A still-running child holds Windows file locks that make rmtree fail.
+                process.kill()
+                process.join(timeout=2)
         shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
@@ -466,12 +476,23 @@ def _emit_process_metrics(metrics_path: Path, offset: int, signals) -> int:
     if not metrics_path.exists():
         return offset
     from ..core.training import TrainMetric
+    from ..diagnostics import logger
 
     with metrics_path.open("r", encoding="utf-8") as stream:
         stream.seek(offset)
         for line in stream:
             payload = json.loads(line)
-            signals.metric.emit(TrainMetric(**payload))
+            try:
+                metric = TrainMetric(**payload)
+            except TypeError:
+                # Corrupted/partial JSON line; skip it rather than crash the poller.
+                logger().warning("Skipping malformed training metric payload: %r", payload)
+                continue
+            try:
+                signals.metric.emit(metric)
+            except RuntimeError:
+                # The GUI signal's C++ object was deleted (window closed).
+                return stream.tell()
         return stream.tell()
 
 
@@ -531,6 +552,10 @@ def _finetune_task_isolated(
         if process.is_alive():
             process.terminate()
             process.join(timeout=5)
+            if process.is_alive():
+                # A still-running child holds Windows file locks that make rmtree fail.
+                process.kill()
+                process.join(timeout=2)
         shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
@@ -547,14 +572,23 @@ def _finetune_task_in_process(
     import torch  # type: ignore
 
     from ..core.training import run_finetune
+    from ..diagnostics import logger
 
     def drain() -> None:
         while not done.is_set() or not handle.metrics.empty():
             try:
                 metric = handle.metrics.get(timeout=0.2)
-            except Exception:
+            except queue.Empty:
                 continue
-            signals.metric.emit(metric)
+            except Exception:
+                # Surface real queue errors instead of silently swallowing them.
+                logger().exception("Error draining training metrics queue")
+                continue
+            try:
+                signals.metric.emit(metric)
+            except RuntimeError:
+                # The GUI signal's C++ object was deleted (window closed); stop draining.
+                break
 
     done = threading.Event()
     drainer = threading.Thread(target=drain, daemon=True)
