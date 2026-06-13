@@ -9,9 +9,30 @@ ML stack is not installed.
 
 from __future__ import annotations
 
+import json
 import platform
+import subprocess
+import sys
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
+
+_DETECTION_LOCK = threading.RLock()
+
+
+def _nvidia_gpu_name() -> str | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return next((line.strip() for line in result.stdout.splitlines() if line.strip()), None)
 
 
 @dataclass(frozen=True)
@@ -60,19 +81,27 @@ class DeviceInfo:
                 "fine-tuning limited to small models (no 4-bit/bitsandbytes)."
             )
         return (
-            "CPU only — no GPU detected. RAG fully available; fine-tuning limited to "
-            "tiny models (slow). Consider a cloud GPU for real fine-tuning."
+            (
+                f"NVIDIA GPU found ({self.name}), but this PyTorch build cannot use CUDA. "
+                "Run `make install-gpu`, then restart the app."
+            )
+            if self.name.startswith("NVIDIA")
+            else (
+                "CPU only — no GPU detected. RAG fully available; fine-tuning limited to "
+                "tiny models (slow). Consider a cloud GPU for real fine-tuning."
+            )
         )
 
 
 @lru_cache(maxsize=1)
 def _import_torch():
-    try:
-        import torch  # type: ignore
+    with _DETECTION_LOCK:
+        try:
+            import torch  # type: ignore
 
-        return torch
-    except Exception:  # pragma: no cover - environment dependent
-        return None
+            return torch
+        except Exception:  # pragma: no cover - environment dependent
+            return None
 
 
 def _bitsandbytes_available() -> bool:
@@ -91,51 +120,74 @@ def detect_device() -> DeviceInfo:
 
     Cached: hardware does not change during a session. Safe to call from any thread.
     """
-    torch = _import_torch()
-    if torch is None:
+    with _DETECTION_LOCK:
+        torch = _import_torch()
+        if torch is None:
+            return DeviceInfo(
+                kind="cpu",
+                name=platform.processor() or platform.machine() or "CPU",
+                total_vram_gb=None,
+                torch_available=False,
+                bnb_available=False,
+            )
+
+        # CUDA
+        try:
+            if torch.cuda.is_available():
+                idx = torch.cuda.current_device()
+                props = torch.cuda.get_device_properties(idx)
+                return DeviceInfo(
+                    kind="cuda",
+                    name=props.name,
+                    total_vram_gb=props.total_memory / (1024**3),
+                    torch_available=True,
+                    bnb_available=_bitsandbytes_available(),
+                )
+        except Exception:  # pragma: no cover - driver quirks
+            pass
+
+        # Apple Silicon MPS
+        try:
+            if (
+                getattr(torch.backends, "mps", None) is not None
+                and torch.backends.mps.is_available()
+            ):
+                return DeviceInfo(
+                    kind="mps",
+                    name=f"Apple {platform.machine()}",
+                    total_vram_gb=None,
+                    torch_available=True,
+                    bnb_available=False,  # bitsandbytes is CUDA-only
+                )
+        except Exception:  # pragma: no cover
+            pass
+
         return DeviceInfo(
             kind="cpu",
-            name=platform.processor() or platform.machine() or "CPU",
+            name=_nvidia_gpu_name() or platform.processor() or platform.machine() or "CPU",
             total_vram_gb=None,
-            torch_available=False,
+            torch_available=True,
             bnb_available=False,
         )
 
-    # CUDA
-    try:
-        if torch.cuda.is_available():
-            idx = torch.cuda.current_device()
-            props = torch.cuda.get_device_properties(idx)
-            return DeviceInfo(
-                kind="cuda",
-                name=props.name,
-                total_vram_gb=props.total_memory / (1024**3),
-                torch_available=True,
-                bnb_available=_bitsandbytes_available(),
-            )
-    except Exception:  # pragma: no cover - driver quirks
-        pass
 
-    # Apple Silicon MPS
-    try:
-        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-            return DeviceInfo(
-                kind="mps",
-                name=f"Apple {platform.machine()}",
-                total_vram_gb=None,
-                torch_available=True,
-                bnb_available=False,  # bitsandbytes is CUDA-only
-            )
-    except Exception:  # pragma: no cover
-        pass
-
-    return DeviceInfo(
-        kind="cpu",
-        name=platform.processor() or platform.machine() or "CPU",
-        total_vram_gb=None,
-        torch_available=True,
-        bnb_available=False,
+def detect_device_isolated(timeout: float = 180) -> DeviceInfo:
+    """Probe hardware in a child process so GUI startup never imports torch."""
+    code = (
+        "import json; "
+        "from dataclasses import asdict; "
+        "from llm_tunner.core.device import detect_device; "
+        "print(json.dumps(asdict(detect_device())))"
     )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        check=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        text=True,
+        timeout=timeout,
+    )
+    return DeviceInfo(**json.loads(result.stdout.strip().splitlines()[-1]))
 
 
 def recommended_models(info: DeviceInfo | None = None) -> list[str]:

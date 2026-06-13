@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QLabel, QMainWindow, QStatusBar, QTabWidget
 
-from .core.device import detect_device
+from .core.device import DeviceInfo, detect_device_isolated
 from .settings import Settings
 from .ui.chat_tab import ChatTab
 from .ui.documents_tab import DocumentsTab
@@ -45,7 +45,13 @@ class MainWindow(QMainWindow):
             current_kb=self.settings.last_kb,
         )
         self.pool = QThreadPool.globalInstance()
-        self.device = detect_device()
+        self.device = DeviceInfo(
+            kind="cpu",
+            name="Detecting hardware...",
+            total_vram_gb=None,
+            torch_available=False,
+            bnb_available=False,
+        )
 
         self.setWindowTitle("LLM-tunner — customize open LLMs with your PDFs")
         self.resize(1100, 760)
@@ -65,8 +71,24 @@ class MainWindow(QMainWindow):
 
         status = QStatusBar()
         self.setStatusBar(status)
-        self._banner = QLabel(self.device.capability_banner())
+        self._banner = QLabel("Detecting hardware and PyTorch capabilities...")
         status.addWidget(self._banner)
+        self._device_worker = self.submit(
+            lambda *, signals: detect_device_isolated(),
+            on_result=self._on_device_detected,
+            on_error=self._on_device_detection_error,
+        )
+
+    def _on_device_detected(self, info: DeviceInfo) -> None:
+        self.device = info
+        banner = info.capability_banner()
+        self._banner.setText(banner)
+        self.settings_tab.update_device_banner(banner)
+
+    def _on_device_detection_error(self, kind: str, message: str) -> None:
+        banner = f"Hardware detection failed ({kind}: {message})."
+        self._banner.setText(banner)
+        self.settings_tab.update_device_banner(banner)
 
     # -- worker submission ------------------------------------------------------
     def submit(

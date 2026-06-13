@@ -104,6 +104,13 @@ class FineTuneTab(QWidget):
             on_finished=lambda: (self.gen_btn.setEnabled(True), self.progress.setVisible(False)),
         )
 
+    def _on_progress(self, done: int, total: int, message: str) -> None:
+        if total > 0:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+        if message:
+            self.window.notify(message)
+
     def _on_dataset(self, result: dict) -> None:
         self._dataset_rows = result["rows"]
         self.log.appendPlainText(f"Dataset: {result['pairs']} pairs saved to {result['path']}")

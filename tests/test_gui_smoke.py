@@ -22,3 +22,21 @@ def test_main_window_constructs_offscreen():
     assert window.windowTitle().startswith("LLM-tunner")
     window.close()
     app.processEvents()
+
+
+def test_finetune_progress_callback_updates_progress_bar():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from llm_tunner.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.finetune_tab._on_progress(2, 5, "")
+
+    assert window.finetune_tab.progress.maximum() == 5
+    assert window.finetune_tab.progress.value() == 2
+
+    window.close()
+    app.processEvents()

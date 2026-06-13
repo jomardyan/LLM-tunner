@@ -23,9 +23,29 @@ def ingest_pdf_task(pdf_path: str, *, signals) -> dict:
 
     signals.log.emit(f"Extracting {Path(pdf_path).name}…")
     doc = extract_pdf(pdf_path)
-    signals.progress.emit(1, 1, f"Extracted {doc.num_pages} page(s) via {doc.backend}")
+    mode = "OCR" if doc.used_ocr else "native text"
+    signals.progress.emit(
+        1,
+        1,
+        f"Extracted {doc.num_pages} page(s) via {doc.backend} ({mode})",
+    )
     preview = doc.full_text[:2000]
-    return {"source": pdf_path, "pages": doc.num_pages, "backend": doc.backend, "preview": preview}
+    return {
+        "source": pdf_path,
+        "pages": doc.num_pages,
+        "backend": doc.backend,
+        "document_type": doc.document_type,
+        "used_ocr": doc.used_ocr,
+        "preview": preview,
+    }
+
+
+def huggingface_login_task(token: str, *, signals) -> dict:
+    """Validate and save a Hugging Face token without exposing it to app settings."""
+    from ..core.models import login_huggingface
+
+    login_huggingface(token)
+    return {"authenticated": True}
 
 
 def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals) -> dict:

@@ -85,7 +85,11 @@ class DocumentsTab(QWidget):
         )
 
     def _show_preview(self, info: dict) -> None:
-        header = f"[{info['backend']}] {info['pages']} page(s)\n{'-' * 40}\n"
+        mode = "OCR" if info["used_ocr"] else "native text"
+        header = (
+            f"[{info['backend']}, {mode}] {info['pages']} page(s), "
+            f"type: {info['document_type']}\n{'-' * 40}\n"
+        )
         self.preview.setPlainText(header + info["preview"])
 
     def _on_error(self, kind: str, message: str) -> None:

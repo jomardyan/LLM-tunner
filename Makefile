@@ -10,6 +10,7 @@ VENV ?= .venv
 PIP_ARGS ?=
 PYTEST_ARGS ?=
 RUFF_ARGS ?=
+PYTORCH_CUDA_INDEX ?= https://download.pytorch.org/whl/cu130
 
 ifeq ($(OS),Windows_NT)
 VENV_PYTHON := $(VENV)/Scripts/python.exe
@@ -27,7 +28,7 @@ PIP := $(PROJECT_PYTHON) -m pip
 	run run-gui test test-core lint format-check check compile build clean
 
 help:
-	@$(PYTHON) -c "print('LLM-tunner tasks:'); print('  make install       MASTER INSTALL: create .venv and install every runtime feature'); print('  make install-minimal Install only the lightweight GUI'); print('  make install-rag   Install GUI and RAG dependencies'); print('  make install-train Install GUI and training dependencies'); print('  make install-all   Alias for make install'); print('  make install-gpu   Alias for make install'); print('  make venv          Create .venv and upgrade pip'); print('  make setup         Create .venv and install development tools'); print('  make install-dev   Install development tools into .venv'); print('  make run           Launch through the console entry point'); print('  make run-gui       Launch through the GUI module'); print('  make test          Run all available tests'); print('  make test-core     Skip optional RAG/training smoke tests'); print('  make lint          Run Ruff'); print('  make check         Run lint, tests, and compilation'); print('  make build         Build wheel and source distribution'); print('  make clean         Remove generated project artifacts'); print(); print('Variables: PYTHON (bootstrap), VENV, PIP_ARGS, PYTEST_ARGS, RUFF_ARGS')"
+	@$(PYTHON) -c "print('LLM-tunner tasks:'); print('  make install       MASTER INSTALL: create .venv and install every runtime feature'); print('  make install-minimal Install only the lightweight GUI'); print('  make install-rag   Install GUI and RAG dependencies'); print('  make install-train Install GUI and training dependencies'); print('  make install-all   Alias for make install'); print('  make install-gpu   Install NVIDIA PyTorch plus every runtime feature'); print('  make venv          Create .venv and upgrade pip'); print('  make setup         Create .venv and install development tools'); print('  make install-dev   Install development tools into .venv'); print('  make run           Launch through the console entry point'); print('  make run-gui       Launch through the GUI module'); print('  make test          Run all available tests'); print('  make test-core     Skip optional RAG/training smoke tests'); print('  make lint          Run Ruff'); print('  make check         Run lint, tests, and compilation'); print('  make build         Build wheel and source distribution'); print('  make clean         Remove generated project artifacts'); print(); print('Variables: PYTHON, VENV, PIP_ARGS, PYTEST_ARGS, RUFF_ARGS, PYTORCH_CUDA_INDEX')"
 
 $(VENV_PYTHON):
 	$(PYTHON) -m venv "$(VENV)"
@@ -43,6 +44,9 @@ upgrade: $(VENV_PYTHON)
 
 install: venv
 	$(PIP) install -e ".[all,gpu]" $(PIP_ARGS)
+ifeq ($(OS),Windows_NT)
+	$(PIP) install --upgrade torch torchvision --index-url $(PYTORCH_CUDA_INDEX) $(PIP_ARGS)
+endif
 
 install-minimal: venv
 	$(PIP) install -e . $(PIP_ARGS)
@@ -56,6 +60,9 @@ install-train: venv
 install-all: install
 
 install-gpu: install
+ifneq ($(OS),Windows_NT)
+	$(PIP) install --upgrade torch torchvision --index-url $(PYTORCH_CUDA_INDEX) $(PIP_ARGS)
+endif
 
 install-dev: $(VENV_PYTHON)
 	$(PIP) install -e ".[dev]" $(PIP_ARGS)

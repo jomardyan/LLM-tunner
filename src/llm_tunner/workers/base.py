@@ -54,8 +54,17 @@ class Worker(QRunnable):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception as exc:  # noqa: BLE001 - surface everything to the UI
-            self.signals.error.emit(type(exc).__name__, str(exc))
+            try:
+                self.signals.error.emit(type(exc).__name__, str(exc))
+            except RuntimeError:
+                pass  # The application closed while the worker was running.
         else:
-            self.signals.result.emit(result)
+            try:
+                self.signals.result.emit(result)
+            except RuntimeError:
+                pass
         finally:
-            self.signals.finished.emit()
+            try:
+                self.signals.finished.emit()
+            except RuntimeError:
+                pass

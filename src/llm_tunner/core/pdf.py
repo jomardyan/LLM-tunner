@@ -1,8 +1,8 @@
 """PDF text extraction.
 
-Primary backend: **Docling** (MIT, layout/table-aware, AI-ready Markdown). Fallback:
-**pypdf** (BSD, pure-Python, always available). We deliberately avoid PyMuPDF because
-its AGPL-3.0 license is a copyleft trap for redistributable software.
+Native-text PDFs use **pypdf** (BSD, pure-Python) without OCR. Scanned or mixed PDFs
+use **Docling** (MIT, layout/table-aware) with OCR when available. We deliberately avoid
+PyMuPDF because its AGPL-3.0 license is a copyleft trap for redistributable software.
 
 Both backends return :class:`ExtractedDoc`, so downstream chunking/RAG/QA code is
 backend-agnostic.
@@ -29,6 +29,8 @@ class ExtractedDoc:
     pages: list[PageText] = field(default_factory=list)
     markdown: str = ""  # full-document Markdown when the backend provides it
     backend: str = "pypdf"
+    document_type: str = "text"
+    used_ocr: bool = False
 
     @property
     def full_text(self) -> str:
@@ -50,26 +52,72 @@ def extract_pdf(path: str | Path, prefer: str = "auto") -> ExtractedDoc:
 
     Args:
         path: Path to the PDF.
-        prefer: ``"auto"`` (Docling if installed, else pypdf), ``"docling"`` or ``"pypdf"``.
+        prefer: ``"auto"`` (native text first, OCR only when needed), ``"docling"``
+            or ``"pypdf"``.
     """
     path = Path(path).expanduser().resolve()
     if not path.exists():
         raise FileNotFoundError(path)
 
-    if prefer in ("auto", "docling") and docling_available():
+    if prefer not in {"auto", "docling", "pypdf"}:
+        raise ValueError(f"Unknown PDF extraction backend: {prefer}")
+
+    native = _extract_with_pypdf(path)
+    native.document_type = _classify_native_text(native)
+
+    if prefer == "pypdf":
+        return native
+    if prefer == "auto" and native.document_type == "text":
+        return native
+
+    if docling_available():
         try:
-            return _extract_with_docling(path)
+            converted = _extract_with_docling(path, do_ocr=native.document_type != "text")
+            converted.document_type = native.document_type
+            return converted
         except Exception:
             if prefer == "docling":
                 raise
             # fall through to pypdf on any Docling failure
-    return _extract_with_pypdf(path)
+    return native
 
 
-def _extract_with_docling(path: Path) -> ExtractedDoc:
-    from docling.document_converter import DocumentConverter  # type: ignore
+def _classify_native_text(doc: ExtractedDoc) -> str:
+    """Classify a PDF as text, scanned, or mixed from pypdf's page output."""
+    if not doc.pages:
+        return "scanned"
 
-    converter = DocumentConverter()
+    meaningful_pages = 0
+    total_alnum = 0
+    for page in doc.pages:
+        alnum = sum(char.isalnum() for char in page.text)
+        words = page.text.split()
+        total_alnum += alnum
+        if alnum >= 20 and len(words) >= 3:
+            meaningful_pages += 1
+
+    coverage = meaningful_pages / len(doc.pages)
+    if coverage >= 0.8 and total_alnum >= 40 * len(doc.pages):
+        return "text"
+    if meaningful_pages == 0:
+        return "scanned"
+    return "mixed"
+
+
+def _extract_with_docling(path: Path, *, do_ocr: bool) -> ExtractedDoc:
+    from docling.datamodel.base_models import InputFormat  # type: ignore
+    from docling.datamodel.pipeline_options import PdfPipelineOptions  # type: ignore
+    from docling.document_converter import (  # type: ignore
+        DocumentConverter,
+        PdfFormatOption,
+    )
+
+    pipeline_options = PdfPipelineOptions(do_ocr=do_ocr)
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        }
+    )
     result = converter.convert(str(path))
     doc = result.document
     markdown = doc.export_to_markdown()
@@ -94,7 +142,14 @@ def _extract_with_docling(path: Path) -> ExtractedDoc:
     if not pages:
         pages = [PageText(page_number=1, text=markdown)]
 
-    return ExtractedDoc(source=str(path), pages=pages, markdown=markdown, backend="docling")
+    return ExtractedDoc(
+        source=str(path),
+        pages=pages,
+        markdown=markdown,
+        backend="docling",
+        document_type="scanned" if do_ocr else "text",
+        used_ocr=do_ocr,
+    )
 
 
 def _extract_with_pypdf(path: Path) -> ExtractedDoc:

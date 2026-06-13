@@ -30,6 +30,31 @@ def is_cached(model_id: str) -> bool:
         return False
 
 
+def huggingface_authenticated() -> bool:
+    """Return whether a stored login or HF_TOKEN is available."""
+    try:
+        from huggingface_hub import get_token  # type: ignore
+
+        return bool(get_token())
+    except Exception:
+        return False
+
+
+def login_huggingface(token: str) -> None:
+    """Validate and save a Hub token using Hugging Face's standard token store."""
+    if not token.strip():
+        raise ValueError("Enter a Hugging Face access token.")
+
+    from huggingface_hub import login  # type: ignore
+
+    clean_token = token.strip()
+    try:
+        login(token=clean_token, add_to_git_credential=False)
+    except Exception as exc:
+        message = str(exc).replace(clean_token, "[redacted]")
+        raise RuntimeError(message) from None
+
+
 def download(model_id: str, progress=None) -> str:
     """Download a model snapshot to the HF cache. Returns the local path."""
     from huggingface_hub import snapshot_download  # type: ignore
