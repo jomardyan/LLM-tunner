@@ -128,6 +128,7 @@ def run_finetune(
     from trl import SFTConfig, SFTTrainer  # type: ignore
 
     from .dataset import to_hf_dataset
+    from .inference import ensure_pad_token
 
     configure_ml_output()
     config = config or TrainConfig()
@@ -142,8 +143,7 @@ def run_finetune(
     device_map = "auto" if info.kind == "cuda" else None
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    ensure_pad_token(tokenizer)
     if not tokenizer.chat_template:
         tokenizer.chat_template = _FALLBACK_CHAT_TEMPLATE
 
