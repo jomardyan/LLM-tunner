@@ -132,6 +132,35 @@ def test_rag_progress_uses_aggregate_chunk_total():
     app.processEvents()
 
 
+def test_documents_preview_uses_cached_metrics(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from llm_tunner.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.state.document_metrics["/some/file.pdf"] = {
+        "backend": "pypdf",
+        "used_ocr": False,
+        "pages": 2,
+        "document_type": "text",
+        "preview": "hello",
+        "source": "/some/file.pdf",
+    }
+    submitted = []
+    monkeypatch.setattr(window, "submit", lambda *args, **kwargs: submitted.append((args, kwargs)))
+
+    window.documents_tab._preview("/some/file.pdf")
+
+    assert submitted == []
+    assert "hello" in window.documents_tab.preview.toPlainText()
+
+    window.close()
+    app.processEvents()
+
+
 def test_document_metrics_are_aggregated():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
