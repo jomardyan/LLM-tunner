@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
 from ..config import (
     DEFAULT_EMBEDDING_MODEL,
     HIGH_QUALITY_EMBEDDING_MODEL,
+    data_dir,
 )
 from ..core.models import registry
 from ..workers.tasks import huggingface_login_task
@@ -33,10 +36,20 @@ class SettingsTab(QWidget):
         self.window = window
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 16)
+        title = QLabel("Settings")
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
+        subtitle = QLabel(
+            "Choose models, retrieval behavior, authentication, and diagnostics."
+        )
+        subtitle.setObjectName("muted")
+        root.addWidget(subtitle)
         form = QFormLayout()
 
         self.model_combo = QComboBox()
-        for entry in registry():
+        self._model_entries = {entry.model_id: entry for entry in registry()}
+        for entry in self._model_entries.values():
             self.model_combo.addItem(
                 f"{entry.model_id}  —  {entry.size}, {entry.license}", entry.model_id
             )
@@ -58,6 +71,11 @@ class SettingsTab(QWidget):
         form.addRow("Retrieval top-k:", self.topk)
 
         root.addLayout(form)
+        self.model_guidance = QLabel()
+        self.model_guidance.setWordWrap(True)
+        self.model_guidance.setObjectName("warning")
+        root.addWidget(self.model_guidance)
+        self.update_model_guidance()
 
         root.addWidget(QLabel("<b>Detected hardware</b>"))
         self.device_banner = QLabel("Detecting hardware and PyTorch capabilities...")
@@ -81,10 +99,34 @@ class SettingsTab(QWidget):
         hf_row.addWidget(self.hf_login_btn)
         root.addLayout(hf_row)
         self._set_hf_status(huggingface_authenticated())
+
+        diagnostics = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh system metrics")
+        self.refresh_btn.clicked.connect(self.window.refresh_runtime_metrics)
+        diagnostics.addWidget(self.refresh_btn)
+        self.logs_btn = QPushButton("Open diagnostics folder")
+        self.logs_btn.clicked.connect(self._open_logs)
+        diagnostics.addWidget(self.logs_btn)
+        diagnostics.addStretch()
+        root.addLayout(diagnostics)
         root.addStretch()
 
     def update_device_banner(self, text: str) -> None:
         self.device_banner.setText(text)
+
+    def update_model_guidance(self) -> None:
+        model_id = self.model_combo.currentData()
+        entry = self._model_entries.get(model_id)
+        vram = self.window.device.total_vram_gb or 0
+        large_model = entry and entry.size in {"3B", "3.8B", "7B", "8B"}
+        if vram and vram <= 4.5 and large_model:
+            self.model_guidance.setText(
+                f"{entry.size} is likely too large for {vram:.0f} GB VRAM. "
+                "Use Qwen2.5-0.5B/1.5B for local work, or expect CPU offload and slow output."
+            )
+            self.model_guidance.show()
+        else:
+            self.model_guidance.hide()
 
     def _set_hf_status(self, authenticated: bool, detail: str = "") -> None:
         if authenticated:
@@ -110,13 +152,25 @@ class SettingsTab(QWidget):
         self.window.submit(
             huggingface_login_task,
             token,
-            on_result=lambda _result: self._set_hf_status(True),
+            on_result=self._on_hf_login_success,
             on_error=self._on_hf_login_error,
             on_finished=lambda: self.hf_login_btn.setEnabled(True),
+            task_name="Signing in to Hugging Face",
         )
 
+    def _on_hf_login_success(self, _result: dict) -> None:
+        self._set_hf_status(True)
+        self.window.metrics_panel.set_authenticated(True)
+        self.window.notify("Hugging Face authentication saved.")
+
     def _on_hf_login_error(self, kind: str, message: str) -> None:
-        self._set_hf_status(False, f"Login failed ({kind}: {message})")
+        summary = self.window.show_error(kind, message, "Hugging Face login")
+        self._set_hf_status(False, summary)
+
+    def _open_logs(self) -> None:
+        log_dir = data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))
 
     def _select_current(self, combo: QComboBox, value: str) -> None:
         for i in range(combo.count()):
@@ -128,6 +182,8 @@ class SettingsTab(QWidget):
         model_id = self.model_combo.currentData()
         self.window.state.base_model = model_id
         self.window.settings.base_model = model_id
+        self.window.update_model_label(model_id)
+        self.update_model_guidance()
         self.window.notify(f"Base model set to {model_id}")
 
     def _on_embed_changed(self) -> None:

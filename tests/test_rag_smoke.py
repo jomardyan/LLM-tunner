@@ -1,4 +1,4 @@
-"""End-to-end RAG smoke test. Skipped unless chromadb + sentence-transformers are present.
+"""End-to-end RAG smoke test. Skipped unless Chroma and ONNX embedding deps are present.
 
 Downloads a tiny embedding model on first run; marked slow/optional for CI without net.
 """
@@ -10,7 +10,7 @@ import importlib.util
 import pytest
 
 _HAVE_RAG = all(
-    importlib.util.find_spec(m) for m in ("chromadb", "sentence_transformers")
+    importlib.util.find_spec(m) for m in ("chromadb", "onnxruntime", "tokenizers")
 )
 
 pytestmark = pytest.mark.skipif(not _HAVE_RAG, reason="RAG extras not installed")

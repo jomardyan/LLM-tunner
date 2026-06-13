@@ -29,7 +29,7 @@ style/behaviour adaptation.
 ## Features
 
 - **Documents** — add PDFs; text is extracted with [Docling](https://github.com/docling-project/docling) (layout/table-aware) or a pypdf fallback.
-- **Knowledge (RAG)** — chunk → embed (sentence-transformers) → store in a local
+- **Knowledge (RAG)** — chunk → embed (ONNX Runtime) → store in a local
   [ChromaDB](https://www.trychroma.com/) vector DB.
 - **Chat** — ask questions; answers cite the source document and page.
 - **Fine-tune** — synthesize Q&A pairs, then run **QLoRA/LoRA** (TRL + PEFT) with a
@@ -55,13 +55,13 @@ from a `TrainerCallback.on_log` hook onto a queue that the worker drains to the 
 
 ## Install
 
-Requires Python 3.10+. Python 3.11 or 3.12 is recommended for the broadest ML package
-compatibility.
+Requires the current stable Python feature release: **Python 3.14**. The dependency
+baselines track current stable major versions rather than legacy compatibility ranges.
 
 ### Windows 11 (PowerShell)
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[all]"
@@ -92,12 +92,10 @@ The app remains usable on Windows without CUDA: RAG runs on CPU and fine-tuning 
 back to plain LoRA for small models. Windows on ARM is not currently supported for
 QLoRA.
 
-On Windows, the app uses the maintained PySide6 Essentials 6.9 line. Newer 6.11 wheels
-currently contain overlong build-artifact paths that fail to install when Windows long
-paths are disabled. The app also avoids the unnecessary PySide6 Addons bundle.
-If path-length limits still affect ML dependencies or model downloads, use a short
-virtual-environment/cache location or enable Windows long paths. Short cache directories
-can be selected before launching:
+The app uses Qt for Python / PySide6 Essentials 6.11 and avoids the unnecessary PySide6
+Addons bundle. If path-length limits affect ML dependencies or model downloads, use a
+short virtual-environment/cache location or enable Windows long paths. Short cache
+directories can be selected before launching:
 
 ```powershell
 $env:HF_HOME = "C:\hf-cache"
@@ -146,6 +144,15 @@ console window.
 3. **Chat** → ask away (answers are cited). Works on CPU.
 4. *(Optional)* **Fine-tune** → *Generate dataset* → *Start QLoRA fine-tune*.
 
+The application shell includes live GPU utilization, VRAM, temperature, storage,
+document/page/chunk counts, operation progress, and elapsed time. PDF extraction,
+knowledge-base builds, chat responses, dataset generation, and fine-tuning also report
+operation-specific throughput and result metrics.
+
+Failures are written to a rotating diagnostics log and shown with a short explanation,
+an incident ID, technical details, and a suggested recovery action. Open the log folder
+from **Settings → Open diagnostics folder**.
+
 ### Hugging Face authentication
 
 Public models work without authentication, but Hugging Face applies lower download rate
@@ -186,13 +193,13 @@ install-gpu` explicitly installs the CUDA wheel on other platforms too.
 Override the bootstrap interpreter or virtual-environment directory when needed:
 
 ```powershell
-make setup PYTHON=py
+make setup PYTHON="py -3.14"
 make setup VENV="C:\venvs\llm-tunner"
 make check VENV="C:\venvs\llm-tunner"
 ```
 
 ```bash
-make setup PYTHON=python3.11 VENV=/opt/venvs/llm-tunner
+make setup PYTHON=python3.14 VENV=/opt/venvs/llm-tunner
 make check VENV=/opt/venvs/llm-tunner
 ```
 

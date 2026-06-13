@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..diagnostics import configure_ml_output
 from .device import detect_device
 from .rag import RagAnswer, RagIndex
 
@@ -51,13 +52,14 @@ class ChatModel:
         import torch  # type: ignore
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
 
+        configure_ml_output()
         info = detect_device()
         dtype = torch.bfloat16 if info.kind == "cuda" else torch.float32
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         device_map = "auto" if info.kind == "cuda" else None
         self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, torch_dtype=dtype, device_map=device_map
+            self.model_id, dtype=dtype, device_map=device_map
         )
         if device_map is None:
             self._model = self._model.to("mps" if info.kind == "mps" else "cpu")

@@ -84,16 +84,21 @@ def generate_qa(
     chunks: list[Chunk],
     generator: QAGenerator | None = None,
     progress=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[QAPair]:
     """Generate Q&A pairs for every chunk using ``generator`` (default: heuristic)."""
     generator = generator or heuristic_generator
     pairs: list[QAPair] = []
     total = len(chunks)
     for i, chunk in enumerate(chunks, start=1):
+        if should_stop and should_stop():
+            break
         for q, a in generator(chunk.text):
             pairs.append(
                 QAPair(question=q, answer=a, source=chunk.source, page_number=chunk.page_number)
             )
+        if should_stop and should_stop():
+            break
         if progress:
             progress(i, total, f"Generated Q&A for {i}/{total} chunks")
     return pairs

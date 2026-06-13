@@ -29,10 +29,16 @@ class RagTab(QWidget):
         self.window = window
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel(
-            "Build a knowledge base: PDFs are chunked, embedded and stored in a local "
-            "vector database. The Chat tab retrieves from it to answer with citations."
-        ))
+        root.setContentsMargins(18, 16, 18, 16)
+        title = QLabel("Knowledge base")
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
+        description = QLabel(
+            "Extract, chunk, and embed your PDFs into a searchable local knowledge base."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+        root.addWidget(description)
 
         form = QFormLayout()
         self.kb_name = QLineEdit("my_knowledge_base")
@@ -47,12 +53,16 @@ class RagTab(QWidget):
 
         controls = QHBoxLayout()
         self.build_btn = QPushButton("Build / update knowledge base")
+        self.build_btn.setObjectName("primary")
         self.build_btn.clicked.connect(self._build)
         controls.addWidget(self.build_btn)
         controls.addStretch()
         root.addLayout(controls)
 
         self.progress = QProgressBar()
+        self.progress.setObjectName("workflowProgress")
+        self.progress.setFixedHeight(28)
+        self.progress.setFormat("%v / %m chunks (%p%)")
         self.progress.setVisible(False)
         root.addWidget(self.progress)
 
@@ -86,8 +96,10 @@ class RagTab(QWidget):
             return
         name = self.kb_name.text().strip() or "my_knowledge_base"
         self.build_btn.setEnabled(False)
+        self.build_btn.setText("Building knowledge base…")
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
+        self.progress.setValue(0)
         self.log.appendPlainText(f"Building '{name}' from {len(pdfs)} PDF(s)…")
         self.window.submit(
             build_kb_task,
@@ -98,14 +110,18 @@ class RagTab(QWidget):
             on_log=self.log.appendPlainText,
             on_result=self._on_done,
             on_error=self._on_error,
-            on_finished=lambda: (self.build_btn.setEnabled(True), self.progress.setVisible(False)),
+            on_finished=self._on_build_finished,
+            task_name="Building knowledge base",
         )
 
     def _on_progress(self, done: int, total: int, message: str) -> None:
         if total > 0:
             self.progress.setRange(0, total)
             self.progress.setValue(done)
+        else:
+            self.progress.setRange(0, 0)
         if message:
+            self.progress.setToolTip(message)
             self.window.notify(message)
 
     def _on_done(self, result: dict) -> None:
@@ -115,7 +131,17 @@ class RagTab(QWidget):
             f"Done. {result['chunks']} chunks indexed; collection now holds {result['count']}."
         )
         self.window.chat_tab.refresh_kb()
+        self.window.update_kb_label(result["kb"])
+        self.window.metrics_panel.set_value(
+            "operation",
+            f"{result['chunks']} chunks · {result['chunks_per_second']:.1f}/s",
+        )
         self.window.notify(f"Knowledge base '{result['kb']}' ready.")
 
     def _on_error(self, kind: str, message: str) -> None:
-        self.log.appendPlainText(f"ERROR ({kind}): {message}")
+        self.log.appendPlainText(self.window.show_error(kind, message, "Knowledge base"))
+
+    def _on_build_finished(self) -> None:
+        self.build_btn.setEnabled(True)
+        self.build_btn.setText("Build / update knowledge base")
+        self.progress.setVisible(False)

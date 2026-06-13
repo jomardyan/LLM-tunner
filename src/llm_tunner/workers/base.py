@@ -13,6 +13,8 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from ..diagnostics import logger
+
 
 class WorkerSignals(QObject):
     """The single signal contract every worker uses.
@@ -54,6 +56,7 @@ class Worker(QRunnable):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception as exc:  # noqa: BLE001 - surface everything to the UI
+            logger().exception("Worker task %s failed", getattr(self.fn, "__name__", self.fn))
             try:
                 self.signals.error.emit(type(exc).__name__, str(exc))
             except RuntimeError:

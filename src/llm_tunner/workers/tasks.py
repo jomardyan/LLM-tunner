@@ -7,6 +7,14 @@ imports happen on the worker thread, not at GUI startup.
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import sys
+import time
+import traceback
+import uuid
+from dataclasses import asdict
 from pathlib import Path
 
 
@@ -21,6 +29,7 @@ def ingest_pdf_task(pdf_path: str, *, signals) -> dict:
     """Extract text from a PDF and return a preview + page count."""
     from ..core.pdf import extract_pdf
 
+    started = time.perf_counter()
     signals.log.emit(f"Extracting {Path(pdf_path).name}…")
     doc = extract_pdf(pdf_path)
     mode = "OCR" if doc.used_ocr else "native text"
@@ -37,7 +46,18 @@ def ingest_pdf_task(pdf_path: str, *, signals) -> dict:
         "document_type": doc.document_type,
         "used_ocr": doc.used_ocr,
         "preview": preview,
+        "characters": len(doc.full_text),
+        "words": len(doc.full_text.split()),
+        "file_size_mb": Path(pdf_path).stat().st_size / (1024**2),
+        "elapsed_seconds": time.perf_counter() - started,
     }
+
+
+def runtime_metrics_task(*, signals) -> dict:
+    """Collect lightweight GPU and storage metrics."""
+    from ..core.metrics import collect_runtime_metrics
+
+    return collect_runtime_metrics().as_dict()
 
 
 def huggingface_login_task(token: str, *, signals) -> dict:
@@ -48,19 +68,196 @@ def huggingface_login_task(token: str, *, signals) -> dict:
     return {"authenticated": True}
 
 
-def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals) -> dict:
-    """Embed and index a list of PDFs into a named knowledge base."""
+def _build_kb(
+    kb_name: str,
+    pdf_paths: list[str],
+    embedding_model: str,
+    *,
+    signals,
+) -> dict:
+    """Embed and index PDFs in the current process."""
     from ..config import RagConfig
+    from ..core.chunking import chunk_document
+    from ..core.pdf import extract_pdf
     from ..core.rag import RagIndex, require_rag_dependencies
 
+    started = time.perf_counter()
     require_rag_dependencies()
     config = RagConfig(embedding_model=embedding_model)
     index = RagIndex(kb_name, config=config)
     total_chunks = 0
+    total_pages = 0
+    total_characters = 0
+    native_documents = 0
+    ocr_documents = 0
+    all_chunks = []
+    signals.progress.emit(0, 0, "Extracting and chunking documents")
     for i, pdf in enumerate(pdf_paths, start=1):
-        signals.log.emit(f"Indexing {Path(pdf).name} ({i}/{len(pdf_paths)})…")
-        total_chunks += index.add_pdf(pdf, progress=_progress_cb(signals))
-    return {"kb": kb_name, "chunks": total_chunks, "count": index.count()}
+        signals.log.emit(f"Extracting {Path(pdf).name} ({i}/{len(pdf_paths)})…")
+        doc = extract_pdf(pdf)
+        total_pages += doc.num_pages
+        total_characters += len(doc.full_text)
+        if doc.used_ocr:
+            ocr_documents += 1
+        else:
+            native_documents += 1
+        signals.log.emit(
+            f"Prepared {doc.num_pages} page(s) via "
+            f"{'OCR' if doc.used_ocr else 'native text'}…"
+        )
+        all_chunks.extend(chunk_document(doc, config.chunk))
+
+    total_chunks = len(all_chunks)
+    signals.progress.emit(0, total_chunks, f"Embedding 0/{total_chunks} chunks")
+    index.add_chunks(all_chunks, progress=_progress_cb(signals))
+    elapsed = time.perf_counter() - started
+    return {
+        "kb": kb_name,
+        "chunks": total_chunks,
+        "count": index.count(),
+        "documents": len(pdf_paths),
+        "pages": total_pages,
+        "characters": total_characters,
+        "native_documents": native_documents,
+        "ocr_documents": ocr_documents,
+        "elapsed_seconds": elapsed,
+        "chunks_per_second": total_chunks / elapsed if elapsed else 0.0,
+    }
+
+
+class _JsonLineSignal:
+    """Persist signal arguments for a parent process to replay."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def emit(self, *values) -> None:
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(values) + "\n")
+            stream.flush()
+
+
+class _ProcessSignals:
+    def __init__(self, progress_path: Path, log_path: Path) -> None:
+        self.progress = _JsonLineSignal(progress_path)
+        self.log = _JsonLineSignal(log_path)
+
+
+def _build_kb_child(
+    kb_name: str,
+    pdf_paths: list[str],
+    embedding_model: str,
+    progress_path: str,
+    log_path: str,
+    result_path: str,
+    error_path: str,
+) -> None:
+    """Build a knowledge base on a process main thread for native Arrow safety."""
+    from ..diagnostics import configure_crash_diagnostics, configure_logging
+
+    os.environ.setdefault("HF_DATASETS_DISABLE_PROGRESS_BARS", "1")
+    configure_crash_diagnostics()
+    configure_logging()
+    signals = _ProcessSignals(Path(progress_path), Path(log_path))
+    try:
+        result = _build_kb(kb_name, pdf_paths, embedding_model, signals=signals)
+        _write_json(Path(result_path), result)
+    except BaseException as exc:  # noqa: BLE001 - serialize child failures to the GUI
+        _write_json(
+            Path(error_path),
+            {
+                "kind": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        raise
+
+
+def _replay_json_lines(path: Path, offset: int, emit) -> int:
+    if not path.exists():
+        return offset
+    with path.open("r", encoding="utf-8") as stream:
+        stream.seek(offset)
+        for line in stream:
+            emit(*json.loads(line))
+        return stream.tell()
+
+
+def _build_kb_isolated(
+    kb_name: str,
+    pdf_paths: list[str],
+    embedding_model: str,
+    *,
+    signals,
+) -> dict:
+    import multiprocessing
+
+    from ..config import data_dir
+
+    runtime_dir = data_dir() / "runtime" / f"knowledge-{uuid.uuid4().hex}"
+    runtime_dir.mkdir(parents=True)
+    progress_path = runtime_dir / "progress.jsonl"
+    log_path = runtime_dir / "log.jsonl"
+    result_path = runtime_dir / "result.json"
+    error_path = runtime_dir / "error.json"
+    process = multiprocessing.get_context("spawn").Process(
+        target=_build_kb_child,
+        args=(
+            kb_name,
+            pdf_paths,
+            embedding_model,
+            str(progress_path),
+            str(log_path),
+            str(result_path),
+            str(error_path),
+        ),
+        name="llm-tunner-knowledge-builder",
+    )
+    process.start()
+    progress_offset = 0
+    log_offset = 0
+    try:
+        while process.is_alive():
+            progress_offset = _replay_json_lines(
+                progress_path, progress_offset, signals.progress.emit
+            )
+            log_offset = _replay_json_lines(log_path, log_offset, signals.log.emit)
+            process.join(timeout=0.2)
+        progress_offset = _replay_json_lines(
+            progress_path, progress_offset, signals.progress.emit
+        )
+        log_offset = _replay_json_lines(log_path, log_offset, signals.log.emit)
+        process.join()
+
+        if result_path.exists():
+            return json.loads(result_path.read_text(encoding="utf-8"))
+        if error_path.exists():
+            error = json.loads(error_path.read_text(encoding="utf-8"))
+            raise RuntimeError(
+                f"{error['kind']}: {error['message']}\n\nChild traceback:\n{error['traceback']}"
+            )
+        raise RuntimeError(
+            f"Knowledge-base process exited with code {process.exitcode} before producing "
+            "a result. See ~/.llm-tunner/logs/native-crash.log."
+        )
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals) -> dict:
+    """Embed and index PDFs, isolating Windows native ML imports from Qt threads."""
+    if sys.platform == "win32":
+        return _build_kb_isolated(
+            kb_name,
+            pdf_paths,
+            embedding_model,
+            signals=signals,
+        )
+    return _build_kb(kb_name, pdf_paths, embedding_model, signals=signals)
 
 
 def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query: str,
@@ -70,13 +267,20 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
     from ..core.inference import ChatModel
     from ..core.rag import RagIndex, require_rag_dependencies
 
+    started = time.perf_counter()
     require_rag_dependencies()
     signals.log.emit("Loading model…")
     model = ChatModel(model_id, adapter_path=adapter_path)
     index = RagIndex(kb_name, config=RagConfig(embedding_model=embedding_model, top_k=top_k))
     signals.log.emit("Retrieving and generating…")
     result = model.rag_answer(query, index, top_k=top_k)
-    return {"answer": result.answer, "sources": result.formatted_sources()}
+    return {
+        "answer": result.answer,
+        "sources": result.formatted_sources(),
+        "elapsed_seconds": time.perf_counter() - started,
+        "contexts": len(result.contexts),
+        "response_words": len(result.answer.split()),
+    }
 
 
 def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
@@ -84,20 +288,36 @@ def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
     """Chat with the model without retrieval."""
     from ..core.inference import ChatModel
 
+    started = time.perf_counter()
     signals.log.emit("Loading model…")
     model = ChatModel(model_id, adapter_path=adapter_path)
     signals.log.emit("Generating…")
     answer = model.chat(query, history=history)
-    return {"answer": answer, "sources": ""}
+    return {
+        "answer": answer,
+        "sources": "",
+        "elapsed_seconds": time.perf_counter() - started,
+        "contexts": 0,
+        "response_words": len(answer.split()),
+    }
 
 
-def generate_dataset_task(kb_pdfs: list[str], use_llm_model: str | None, *, signals) -> dict:
+def generate_dataset_task(
+    kb_pdfs: list[str],
+    use_llm_model: str | None,
+    handle=None,
+    *,
+    signals,
+) -> dict:
     """Build a fine-tuning dataset (Q&A pairs) from PDFs and save it as JSONL."""
+    from ..core.cancellation import CancelHandle
     from ..core.chunking import chunk_document
     from ..core.dataset import save_jsonl, to_messages
     from ..core.pdf import extract_pdf
     from ..core.qa_gen import generate_qa, heuristic_generator, llm_generator
 
+    started = time.perf_counter()
+    handle = handle or CancelHandle()
     generator = heuristic_generator
     if use_llm_model:
         from ..core.inference import ChatModel
@@ -107,46 +327,269 @@ def generate_dataset_task(kb_pdfs: list[str], use_llm_model: str | None, *, sign
         generator = llm_generator(cm)
 
     all_chunks = []
-    for pdf in kb_pdfs:
-        signals.log.emit(f"Chunking {Path(pdf).name}…")
+    for index, pdf in enumerate(kb_pdfs, start=1):
+        if handle.is_stopped():
+            return {"cancelled": True}
+        signals.log.emit(f"Chunking {Path(pdf).name} ({index}/{len(kb_pdfs)})…")
         all_chunks.extend(chunk_document(extract_pdf(pdf)))
 
-    pairs = generate_qa(all_chunks, generator=generator, progress=_progress_cb(signals))
+    if handle.is_stopped():
+        return {"cancelled": True}
+    pairs = generate_qa(
+        all_chunks,
+        generator=generator,
+        progress=_progress_cb(signals),
+        should_stop=handle.is_stopped,
+    )
+    if handle.is_stopped():
+        return {"cancelled": True}
     rows = to_messages(pairs)
     path = save_jsonl(rows, "finetune_dataset")
-    return {"pairs": len(pairs), "path": str(path), "rows": rows}
+    return {
+        "pairs": len(pairs),
+        "path": str(path),
+        "rows": rows,
+        "chunks": len(all_chunks),
+        "documents": len(kb_pdfs),
+        "elapsed_seconds": time.perf_counter() - started,
+    }
 
 
-def finetune_task(model_id: str, dataset_rows: list[dict], output_name: str, handle, *, signals):
-    """Run QLoRA fine-tuning, draining metrics from ``handle`` to the UI.
+class _FileMetricSink:
+    """Append child-process training metrics as JSON lines."""
 
-    Metric draining runs in a small helper thread so loss points stream live while
-    ``run_finetune`` blocks on training.
-    """
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def put(self, metric) -> None:
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(asdict(metric)) + "\n")
+            stream.flush()
+
+
+class _FileStopEvent:
+    """Expose the ``threading.Event`` interface expected by the trainer callback."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def is_set(self) -> bool:
+        return self.path.exists()
+
+
+class _ProcessTrainHandle:
+    def __init__(self, metrics_path: Path, stop_path: Path) -> None:
+        self.metrics = _FileMetricSink(metrics_path)
+        self.stop_event = _FileStopEvent(stop_path)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _finetune_child(
+    model_id: str,
+    dataset_rows: list[dict],
+    output_name: str,
+    metrics_path: str,
+    stop_path: str,
+    result_path: str,
+    error_path: str,
+) -> None:
+    """Run the native ML stack outside the Qt process on Windows."""
+    from ..core.training import run_finetune
+    from ..diagnostics import configure_crash_diagnostics, configure_logging
+
+    configure_crash_diagnostics()
+    configure_logging()
+    started = time.perf_counter()
+    metrics_file = Path(metrics_path)
+    stop_file = Path(stop_path)
+    result_file = Path(result_path)
+    error_file = Path(error_path)
+    handle = _ProcessTrainHandle(metrics_file, stop_file)
+
+    def complete(result) -> None:
+        import torch  # type: ignore
+
+        elapsed = time.perf_counter() - started
+        peak_vram_mb = (
+            torch.cuda.max_memory_allocated() / (1024**2)
+            if torch.cuda.is_available()
+            else 0.0
+        )
+        _write_json(
+            result_file,
+            {
+                "adapter_path": result.adapter_path,
+                "final_loss": result.final_loss,
+                "steps": result.steps,
+                "used_4bit": result.used_4bit,
+                "elapsed_seconds": elapsed,
+                "steps_per_second": result.steps / elapsed if elapsed else 0.0,
+                "peak_vram_mb": peak_vram_mb,
+                "dataset_rows": len(dataset_rows),
+            },
+        )
+        # bitsandbytes/PyTorch can access-violate while destroying a completed
+        # QLoRA graph on Windows. This process is dedicated to one training run,
+        # so bypass native teardown after all durable output has been written.
+        os._exit(0)
+
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        run_finetune(
+            model_id,
+            dataset_rows,
+            output_name=output_name,
+            handle=handle,
+            completion_callback=complete,
+        )
+    except BaseException as exc:  # noqa: BLE001 - serialize child failures to the GUI
+        _write_json(
+            error_file,
+            {
+                "kind": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        os._exit(1)
+
+
+def _emit_process_metrics(metrics_path: Path, offset: int, signals) -> int:
+    if not metrics_path.exists():
+        return offset
+    from ..core.training import TrainMetric
+
+    with metrics_path.open("r", encoding="utf-8") as stream:
+        stream.seek(offset)
+        for line in stream:
+            payload = json.loads(line)
+            signals.metric.emit(TrainMetric(**payload))
+        return stream.tell()
+
+
+def _finetune_task_isolated(
+    model_id: str,
+    dataset_rows: list[dict],
+    output_name: str,
+    handle,
+    signals,
+) -> dict:
+    import multiprocessing
+
+    from ..config import data_dir
+
+    runtime_dir = data_dir() / "runtime" / f"training-{uuid.uuid4().hex}"
+    runtime_dir.mkdir(parents=True)
+    metrics_path = runtime_dir / "metrics.jsonl"
+    stop_path = runtime_dir / "stop"
+    result_path = runtime_dir / "result.json"
+    error_path = runtime_dir / "error.json"
+    process = multiprocessing.get_context("spawn").Process(
+        target=_finetune_child,
+        args=(
+            model_id,
+            dataset_rows,
+            output_name,
+            str(metrics_path),
+            str(stop_path),
+            str(result_path),
+            str(error_path),
+        ),
+        name="llm-tunner-training",
+    )
+    process.start()
+    offset = 0
+    try:
+        while process.is_alive():
+            offset = _emit_process_metrics(metrics_path, offset, signals)
+            if handle.stop_event.is_set() and not stop_path.exists():
+                stop_path.touch()
+            process.join(timeout=0.2)
+        offset = _emit_process_metrics(metrics_path, offset, signals)
+        process.join()
+
+        if result_path.exists():
+            return json.loads(result_path.read_text(encoding="utf-8"))
+        if error_path.exists():
+            error = json.loads(error_path.read_text(encoding="utf-8"))
+            raise RuntimeError(
+                f"{error['kind']}: {error['message']}\n\nChild traceback:\n{error['traceback']}"
+            )
+        raise RuntimeError(
+            f"Fine-tuning process exited with code {process.exitcode} before producing "
+            "a result. See ~/.llm-tunner/logs/native-crash.log."
+        )
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+def _finetune_task_in_process(
+    model_id: str,
+    dataset_rows: list[dict],
+    output_name: str,
+    handle,
+    signals,
+) -> dict:
+    """Run training directly on platforms without the Windows teardown issue."""
     import threading
+
+    import torch  # type: ignore
 
     from ..core.training import run_finetune
 
-    def _drain():
+    def drain() -> None:
         while not done.is_set() or not handle.metrics.empty():
             try:
-                m = handle.metrics.get(timeout=0.2)
+                metric = handle.metrics.get(timeout=0.2)
             except Exception:
                 continue
-            signals.metric.emit(m)
+            signals.metric.emit(metric)
 
     done = threading.Event()
-    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer = threading.Thread(target=drain, daemon=True)
     drainer.start()
+    started = time.perf_counter()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     try:
-        signals.log.emit(f"Starting fine-tune of {model_id}…")
         result = run_finetune(model_id, dataset_rows, output_name=output_name, handle=handle)
     finally:
         done.set()
         drainer.join(timeout=2)
+    elapsed = time.perf_counter() - started
+    peak_vram_mb = (
+        torch.cuda.max_memory_allocated() / (1024**2) if torch.cuda.is_available() else 0.0
+    )
     return {
         "adapter_path": result.adapter_path,
         "final_loss": result.final_loss,
         "steps": result.steps,
         "used_4bit": result.used_4bit,
+        "elapsed_seconds": elapsed,
+        "steps_per_second": result.steps / elapsed if elapsed else 0.0,
+        "peak_vram_mb": peak_vram_mb,
+        "dataset_rows": len(dataset_rows),
     }
+
+
+def finetune_task(model_id: str, dataset_rows: list[dict], output_name: str, handle, *, signals):
+    """Run fine-tuning with live metrics and cooperative cancellation.
+
+    Windows uses a dedicated process because CUDA/bitsandbytes teardown can terminate
+    the host process after a successful QLoRA save.
+    """
+    signals.log.emit(f"Starting fine-tune of {model_id}…")
+    if sys.platform == "win32":
+        return _finetune_task_isolated(model_id, dataset_rows, output_name, handle, signals)
+    return _finetune_task_in_process(model_id, dataset_rows, output_name, handle, signals)

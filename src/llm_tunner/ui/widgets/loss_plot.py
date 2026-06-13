@@ -17,11 +17,11 @@ class LossPlot(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self._plot = pg.PlotWidget()
-        self._plot.setBackground("w")
-        self._plot.setLabel("left", "loss")
-        self._plot.setLabel("bottom", "step")
+        self._plot.setBackground("#0d141b")
+        self._plot.setLabel("left", "loss", color="#b7c5d3")
+        self._plot.setLabel("bottom", "step", color="#b7c5d3")
         self._plot.showGrid(x=True, y=True, alpha=0.3)
-        self._curve = self._plot.plot(pen=pg.mkPen(width=2))
+        self._curve = self._plot.plot(pen=pg.mkPen("#4c98e8", width=2))
         layout.addWidget(self._plot)
 
         self._steps: list[int] = []

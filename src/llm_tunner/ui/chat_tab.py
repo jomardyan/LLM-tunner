@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,8 +29,19 @@ class ChatTab(QWidget):
         super().__init__()
         self.window = window
         self.history: list[dict] = []
+        self._last_answer = ""
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 16)
+
+        title = QLabel("Chat")
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
+        subtitle = QLabel(
+            "Ask the base model directly or ground answers in the active knowledge base."
+        )
+        subtitle.setObjectName("muted")
+        root.addWidget(subtitle)
 
         top = QHBoxLayout()
         self.use_rag = QCheckBox("Use knowledge base (RAG)")
@@ -41,6 +53,12 @@ class ChatTab(QWidget):
         top.addStretch()
         self.adapter_label = QLabel("adapter: none")
         top.addWidget(self.adapter_label)
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self._clear)
+        top.addWidget(self.clear_btn)
+        self.export_btn = QPushButton("Export")
+        self.export_btn.clicked.connect(self._export)
+        top.addWidget(self.export_btn)
         root.addLayout(top)
 
         self.transcript = QTextEdit()
@@ -52,6 +70,7 @@ class ChatTab(QWidget):
         self.input.setPlaceholderText("Ask a question about your documents…")
         self.input.returnPressed.connect(self._send)
         self.send_btn = QPushButton("Send")
+        self.send_btn.setObjectName("primary")
         self.send_btn.clicked.connect(self._send)
         entry.addWidget(self.input, 1)
         entry.addWidget(self.send_btn)
@@ -89,10 +108,11 @@ class ChatTab(QWidget):
                 query,
                 self.window.state.embedding_model,
                 self.window.settings.top_k,
-                on_result=self._on_answer,
+                on_result=lambda result: self._on_answer(result, query),
                 on_log=self.window.notify,
                 on_finished=lambda: self.send_btn.setEnabled(True),
                 on_error=self._on_error,
+                task_name="Generating grounded answer",
             )
         else:
             self.window.submit(
@@ -105,15 +125,46 @@ class ChatTab(QWidget):
                 on_log=self.window.notify,
                 on_finished=lambda: self.send_btn.setEnabled(True),
                 on_error=self._on_error,
+                task_name="Generating answer",
             )
 
     def _on_answer(self, result: dict, query: str | None = None) -> None:
         answer = result.get("answer", "")
         sources = result.get("sources", "")
         self._append("Assistant", answer, sources)
+        self._last_answer = answer
+        elapsed = result.get("elapsed_seconds")
+        if elapsed is not None:
+            self.window.metrics_panel.set_value(
+                "operation",
+                f"Answer: {elapsed:.1f}s · {result.get('response_words', 0)} words · "
+                f"{result.get('contexts', 0)} context(s)",
+            )
         if query is not None:
             self.history.append({"role": "user", "content": query})
             self.history.append({"role": "assistant", "content": answer})
 
     def _on_error(self, kind: str, message: str) -> None:
-        self._append("Error", f"{kind}: {message}")
+        self._append("Error", self.window.show_error(kind, message, "Chat"))
+
+    def _clear(self) -> None:
+        self.history.clear()
+        self._last_answer = ""
+        self.transcript.clear()
+        self.window.notify("Chat cleared.")
+
+    def _export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export chat",
+            "llm-tunner-chat.txt",
+            "Text files (*.txt)",
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.transcript.toPlainText(), encoding="utf-8")
+        except OSError as exc:
+            self.window.show_error(type(exc).__name__, str(exc), "Export chat")
+            return
+        self.window.notify(f"Chat exported to {path}", 8000)

@@ -1,10 +1,10 @@
 """Retrieval-Augmented Generation: the default "feed PDF as knowledge" path.
 
-Pipeline: PDF -> :mod:`core.pdf` -> :mod:`core.chunking` -> embed (sentence-transformers)
+Pipeline: PDF -> :mod:`core.pdf` -> :mod:`core.chunking` -> embed (ONNX Runtime)
 -> persist in a per-knowledge-base **ChromaDB** collection -> retrieve top-k at query
 time -> build a grounded prompt with **page citations**.
 
-Heavy deps (chromadb, sentence-transformers) are imported lazily inside methods so the
+Heavy deps (chromadb, ONNX Runtime) are imported lazily inside methods so the
 GUI launches without them; a clear error is raised only when RAG is actually used.
 """
 
@@ -18,12 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import RagConfig, kb_dir
+from ..diagnostics import configure_ml_output
 from .chunking import Chunk, chunk_document
 from .pdf import ExtractedDoc, extract_pdf
 
 _RAG_MODULES = {
     "chromadb": "chromadb",
-    "sentence_transformers": "sentence-transformers",
+    "onnxruntime": "onnxruntime",
+    "tokenizers": "tokenizers",
 }
 
 
@@ -124,28 +126,81 @@ def _chunk_id(chunk: Chunk) -> str:
 
 
 class Embedder:
-    """Lazily-loaded sentence-transformers wrapper, device-aware."""
+    """ONNX encoder with attention-mask mean pooling and L2 normalization."""
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self._model = None
+        self._session = None
+        self._tokenizer = None
 
     def _load(self):
-        if self._model is None:
+        if self._session is None:
             require_rag_dependencies()
-            from sentence_transformers import SentenceTransformer  # type: ignore
+            import onnxruntime  # type: ignore
+            from huggingface_hub import hf_hub_download  # type: ignore
+            from huggingface_hub.errors import EntryNotFoundError  # type: ignore
+            from tokenizers import Tokenizer  # type: ignore
 
-            from .device import detect_device
+            configure_ml_output()
+            model_path = hf_hub_download(self.model_name, "onnx/model.onnx")
+            try:
+                hf_hub_download(self.model_name, "onnx/model.onnx_data")
+            except EntryNotFoundError:
+                pass
+            try:
+                tokenizer_path = hf_hub_download(self.model_name, "onnx/tokenizer.json")
+            except EntryNotFoundError:
+                tokenizer_path = hf_hub_download(self.model_name, "tokenizer.json")
 
-            device = detect_device().kind
-            st_device = device if device in ("cuda", "mps") else "cpu"
-            self._model = SentenceTransformer(self.model_name, device=st_device)
-        return self._model
+            self._tokenizer = Tokenizer.from_file(tokenizer_path)
+            self._tokenizer.enable_truncation(max_length=512)
+            pad_token = next(
+                (
+                    token
+                    for token in ("[PAD]", "<pad>", "<|pad|>")
+                    if self._tokenizer.token_to_id(token) is not None
+                ),
+                "[PAD]",
+            )
+            pad_id = self._tokenizer.token_to_id(pad_token) or 0
+            self._tokenizer.enable_padding(pad_id=pad_id, pad_token=pad_token)
+            self._session = onnxruntime.InferenceSession(
+                model_path,
+                providers=["CPUExecutionProvider"],
+            )
+        return self._tokenizer, self._session
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        model = self._load()
-        vecs = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-        return [v.tolist() for v in vecs]
+        import numpy  # type: ignore
+
+        tokenizer, session = self._load()
+        encodings = tokenizer.encode_batch(texts)
+        available_inputs = {item.name for item in session.get_inputs()}
+        values = {
+            "input_ids": numpy.asarray([item.ids for item in encodings], dtype=numpy.int64),
+            "attention_mask": numpy.asarray(
+                [item.attention_mask for item in encodings],
+                dtype=numpy.int64,
+            ),
+            "token_type_ids": numpy.asarray(
+                [item.type_ids for item in encodings],
+                dtype=numpy.int64,
+            ),
+        }
+        outputs = session.run(None, {key: value for key, value in values.items()
+                                     if key in available_inputs})
+        embeddings = next((output for output in outputs if output.ndim == 2), None)
+        if embeddings is None:
+            hidden = next((output for output in outputs if output.ndim == 3), None)
+            if hidden is None:
+                raise RuntimeError(
+                    f"ONNX model '{self.model_name}' produced no 2D or 3D output tensor; "
+                    f"output shapes: {[o.shape for o in outputs]}"
+                )
+            mask = values["attention_mask"][..., None].astype(numpy.float32)
+            embeddings = (hidden * mask).sum(axis=1) / numpy.clip(mask.sum(axis=1), 1e-9, None)
+        norms = numpy.linalg.norm(embeddings, axis=1, keepdims=True)
+        return (embeddings / numpy.clip(norms, 1e-12, None)).tolist()
 
 
 class RagIndex:
@@ -198,12 +253,17 @@ class RagIndex:
         ``progress`` is an optional callable ``(done, total, message)`` for GUI updates.
         """
         doc: ExtractedDoc = extract_pdf(pdf_path)
+        return self.add_document(doc, progress=progress)
+
+    def add_document(self, doc: ExtractedDoc, progress=None) -> int:
+        """Chunk, embed, and store a previously extracted document."""
         chunks: list[Chunk] = chunk_document(doc, self.config.chunk)
+        return self.add_chunks(chunks, progress=progress)
+
+    def add_chunks(self, chunks: list[Chunk], progress=None) -> int:
+        """Embed and store precomputed chunks from one or more documents."""
         if not chunks:
             return 0
-        return self._add_chunks(chunks, progress=progress)
-
-    def _add_chunks(self, chunks: list[Chunk], progress=None) -> int:
         coll = self._coll()
         batch = 64
         total = len(chunks)
@@ -235,6 +295,10 @@ class RagIndex:
             if stale_ids:
                 coll.delete(ids=stale_ids)
         return total
+
+    # Kept for compatibility with integrations that used the original internal helper.
+    def _add_chunks(self, chunks: list[Chunk], progress=None) -> int:
+        return self.add_chunks(chunks, progress=progress)
 
     # -- retrieval ----------------------------------------------------------------
     def retrieve(self, query: str, top_k: int | None = None) -> list[Retrieved]:

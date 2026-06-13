@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import TrainConfig, adapters_dir
+from ..diagnostics import configure_ml_output
 from .device import detect_device
 
 _FALLBACK_CHAT_TEMPLATE = (
@@ -37,6 +39,7 @@ class TrainMetric:
     loss: float | None
     learning_rate: float | None
     epoch: float | None
+    grad_norm: float | None = None
 
 
 @dataclass
@@ -67,6 +70,7 @@ def _make_callback_class():
                         loss=logs.get("loss"),
                         learning_rate=logs.get("learning_rate"),
                         epoch=logs.get("epoch"),
+                        grad_norm=logs.get("grad_norm"),
                     )
                 )
             return control
@@ -110,6 +114,7 @@ def run_finetune(
     config: TrainConfig | None = None,
     output_name: str = "adapter",
     handle: TrainHandle | None = None,
+    completion_callback: Callable[[TrainResult], None] | None = None,
 ) -> TrainResult:
     """Fine-tune ``model_id`` on conversational ``dataset_rows`` and save a LoRA adapter.
 
@@ -124,6 +129,7 @@ def run_finetune(
 
     from .dataset import to_hf_dataset
 
+    configure_ml_output()
     config = config or TrainConfig()
     handle = handle or TrainHandle()
     info = detect_device()
@@ -144,7 +150,7 @@ def run_finetune(
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=quant_config,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map=device_map,
     )
     if device_map is None:
@@ -171,6 +177,7 @@ def run_finetune(
         use_cpu=info.kind == "cpu",
         bf16=info.kind == "cuda" and torch.cuda.is_bf16_supported(),
         fp16=False,
+        loss_type="chunked_nll",
         report_to=[],
         save_strategy="no",
     )
@@ -191,12 +198,15 @@ def run_finetune(
 
     final_loss = getattr(train_output, "training_loss", None)
     steps = int(getattr(train_output, "global_step", 0)) or trainer.state.global_step
-    return TrainResult(
+    result = TrainResult(
         adapter_path=str(out_dir),
         final_loss=final_loss,
         steps=steps,
         used_4bit=use_4bit,
     )
+    if completion_callback is not None:
+        completion_callback(result)
+    return result
 
 
 def adapter_exists(name: str) -> bool:

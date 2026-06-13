@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from types import ModuleType, SimpleNamespace
-
 from llm_tunner.core.device import (
     _bitsandbytes_available,
     detect_device,
@@ -26,13 +23,17 @@ def test_recommended_models_nonempty():
     assert len(recommended_models()) >= 1
 
 
-def test_bitsandbytes_requires_cuda_native_library(monkeypatch):
-    package = ModuleType("bitsandbytes")
-    extension = ModuleType("bitsandbytes.cextension")
-    extension.lib = SimpleNamespace(compiled_with_cuda=False)
-    monkeypatch.setitem(sys.modules, "bitsandbytes", package)
-    monkeypatch.setitem(sys.modules, "bitsandbytes.cextension", extension)
+def test_bitsandbytes_checks_installed_distribution(monkeypatch):
+    from importlib.metadata import PackageNotFoundError
+
+    monkeypatch.setattr(
+        "llm_tunner.core.device.importlib.metadata.version",
+        lambda _name: (_ for _ in ()).throw(PackageNotFoundError),
+    )
     assert not _bitsandbytes_available()
 
-    extension.lib = SimpleNamespace(compiled_with_cuda=True)
+    monkeypatch.setattr(
+        "llm_tunner.core.device.importlib.metadata.version",
+        lambda _name: "0.49.2",
+    )
     assert _bitsandbytes_available()

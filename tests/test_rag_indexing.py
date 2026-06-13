@@ -54,9 +54,9 @@ def test_storage_name_is_windows_safe_and_bounded():
 def test_rag_dependency_error_lists_missing_packages(monkeypatch):
     monkeypatch.setattr(
         "llm_tunner.core.rag.importlib.util.find_spec",
-        lambda module: None if module in {"chromadb", "sentence_transformers"} else object(),
+        lambda module: None if module in {"chromadb", "onnxruntime"} else object(),
     )
-    assert missing_rag_dependencies() == ["chromadb", "sentence-transformers"]
+    assert missing_rag_dependencies() == ["chromadb", "onnxruntime"]
 
     import pytest
 
@@ -82,6 +82,6 @@ def test_reindex_upserts_and_removes_stale_chunks(monkeypatch):
     index._embedder = FakeEmbedder()
     monkeypatch.setattr(index, "_coll", lambda: collection)
 
-    assert index._add_chunks(chunks) == 2
+    assert index.add_chunks(chunks) == 2
     assert collection.upserts[0]["ids"] == [_chunk_id(c) for c in chunks]
     assert collection.deleted == [_chunk_id(stale)]

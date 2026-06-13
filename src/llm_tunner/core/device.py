@@ -9,6 +9,7 @@ ML stack is not installed.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import platform
 import subprocess
@@ -105,12 +106,11 @@ def _import_torch():
 
 
 def _bitsandbytes_available() -> bool:
-    """Return whether bitsandbytes loaded a CUDA-capable native library."""
+    """Return whether bitsandbytes is installed without importing its CUDA backend."""
     try:
-        from bitsandbytes.cextension import lib  # type: ignore
-
-        return bool(getattr(lib, "compiled_with_cuda", False))
-    except Exception:  # pragma: no cover
+        importlib.metadata.version("bitsandbytes")
+        return True
+    except importlib.metadata.PackageNotFoundError:
         return False
 
 

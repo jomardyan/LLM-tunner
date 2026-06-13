@@ -36,3 +36,24 @@ def test_parse_pairs_ignores_unrelated_brackets():
         "Done."
     )
     assert _parse_pairs(raw) == [("Capital?", "Paris")]
+
+
+def test_generate_qa_stops_between_chunks():
+    chunks = [
+        Chunk(text=f"Chunk {index}.", source="a.pdf", page_number=1, index=index)
+        for index in range(4)
+    ]
+    calls = 0
+
+    def should_stop():
+        return calls >= 2
+
+    def generator(text):
+        nonlocal calls
+        calls += 1
+        return [("Question?", text)]
+
+    pairs = generate_qa(chunks, generator=generator, should_stop=should_stop)
+
+    assert calls == 2
+    assert len(pairs) == 2

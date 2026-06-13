@@ -39,10 +39,17 @@ def test_finetune_writes_adapter():
         use_4bit=True,  # auto-disabled off-CUDA
         lora=LoraConfig(r=4, lora_alpha=8, target_modules=("c_attn",)),  # GPT-2 module
     )
+    completed = []
     result = run_finetune(
-        "sshleifer/tiny-gpt2", _tiny_rows(), config=config, output_name="smoke", handle=handle
+        "sshleifer/tiny-gpt2",
+        _tiny_rows(),
+        config=config,
+        output_name="smoke",
+        handle=handle,
+        completion_callback=completed.append,
     )
     assert adapter_exists("smoke")
     assert result.steps >= 1
+    assert completed == [result]
     # The metric queue should have received at least one logged step.
     assert not handle.metrics.empty()

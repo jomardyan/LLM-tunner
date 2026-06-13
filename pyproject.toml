@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=82.0.1,<83", "wheel>=0.47,<0.48"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,12 @@ name = "llm-tunner"
 version = "0.1.0"
 description = "Desktop GUI to customize open LLMs with PDF knowledge (RAG-first, optional QLoRA fine-tuning)"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.14,<3.15"
+license = "Apache-2.0"
 authors = [{ name = "LLM-tunner contributors" }]
 keywords = ["llm", "rag", "fine-tuning", "qlora", "pdf", "pyside6", "gui"]
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
     "Operating System :: Microsoft :: Windows",
     "Environment :: Win32 (MS Windows)",
@@ -24,44 +23,45 @@ classifiers = [
 # Core dependencies. Heavy ML extras live in [project.optional-dependencies] so the
 # GUI can install and launch on machines without a full training stack.
 dependencies = [
-    "PySide6-Essentials>=6.7,<6.10; platform_system == 'Windows'",
-    "PySide6-Essentials>=6.7; platform_system != 'Windows'",
-    "pyqtgraph>=0.13",
-    "pypdf>=4.0",
+    "PySide6-Essentials>=6.11.1,<7",
+    "pyqtgraph>=0.14,<0.15",
+    "pypdf>=6.13.2,<7",
 ]
 
 [project.optional-dependencies]
 # RAG knowledge path (works on CPU/MPS/CUDA).
 rag = [
-    "torch>=2.3",
-    "sentence-transformers>=3.0",
-    "chromadb>=0.5",
-    "docling>=2.0",
-    "transformers>=4.44",
-    "huggingface-hub>=0.24",
+    "torch>=2.12,<3",
+    "chromadb>=1.5.9,<2",
+    "docling>=2.102.1,<3",
+    "transformers>=5.12,<6",
+    "huggingface-hub>=1.19,<2",
+    "onnxruntime>=1.26,<2",
+    "tokenizers>=0.22.2,<0.23",
 ]
 # Fine-tuning path (transformers + PEFT + TRL).
 train = [
-    "torch>=2.3",
-    "transformers>=4.44",
-    "peft>=0.12",
-    "trl>=0.16.1",
-    "datasets>=2.20",
-    "accelerate>=0.33",
-    "matplotlib>=3.8",
-    "huggingface-hub>=0.24",
+    "torch>=2.12,<3",
+    "transformers>=5.12,<6",
+    "peft>=0.19.1,<1",
+    "trl>=1.6,<2",
+    "datasets>=5,<6",
+    "accelerate>=1.14,<2",
+    "matplotlib>=3.11,<4",
+    "huggingface-hub>=1.19,<2",
 ]
 # 4-bit QLoRA backend. CUDA only; declared as an explicit opt-in extra.
 gpu = [
-    "bitsandbytes>=0.49; platform_system == 'Linux' or (platform_system == 'Windows' and platform_machine == 'AMD64')",
+    "bitsandbytes>=0.49.2,<0.50; platform_system == 'Linux' or (platform_system == 'Windows' and platform_machine == 'AMD64')",
 ]
 # Everything for a full local install.
 all = [
     "llm-tunner[rag,train]",
 ]
 dev = [
-    "pytest>=8.0",
-    "ruff>=0.5",
+    "build>=1.5,<2",
+    "pytest>=9.0.3,<10",
+    "ruff>=0.15.17,<0.16",
 ]
 
 [project.scripts]
@@ -78,7 +78,7 @@ llm_tunner = ["py.typed"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
