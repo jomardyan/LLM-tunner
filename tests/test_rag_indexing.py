@@ -3,8 +3,10 @@ from __future__ import annotations
 from llm_tunner.core.chunking import Chunk
 from llm_tunner.core.rag import (
     RagIndex,
+    Retrieved,
     _chunk_id,
     _collection_name,
+    _recent_turns,
     _storage_name,
     missing_rag_dependencies,
     rag_install_command,
@@ -85,3 +87,42 @@ def test_reindex_upserts_and_removes_stale_chunks(monkeypatch):
     assert index.add_chunks(chunks) == 2
     assert collection.upserts[0]["ids"] == [_chunk_id(c) for c in chunks]
     assert collection.deleted == [_chunk_id(stale)]
+
+
+def test_recent_turns_caps_and_starts_on_user_message():
+    history = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+    recent = _recent_turns(history, max_turns=2)
+    assert len(recent) == 4
+    assert recent[0] == {"role": "user", "content": "u2"}
+    assert _recent_turns(None, 3) == []
+    assert _recent_turns(history, 0) == []
+
+
+def test_build_prompt_includes_history_and_system_prefix():
+    index = RagIndex.__new__(RagIndex)  # build_prompt does not touch self.config
+    ctx = Retrieved(text="Paris is the capital.", source="/d/f.pdf", page_number=1, score=0.9)
+    history = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+    ]
+    messages = index.build_prompt("now?", [ctx], history=history, system_prefix="Be terse")
+
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"].startswith("Be terse")
+    assert "Context:" in messages[0]["content"]
+    assert {"role": "user", "content": "earlier question"} in messages
+    assert messages[-1] == {"role": "user", "content": "now?"}
+
+
+def test_build_prompt_backward_compatible_without_history():
+    index = RagIndex.__new__(RagIndex)
+    ctx = Retrieved(text="text", source="/d/f.pdf", page_number=1, score=0.5)
+    messages = index.build_prompt("q", [ctx])
+    assert [m["role"] for m in messages] == ["system", "user"]

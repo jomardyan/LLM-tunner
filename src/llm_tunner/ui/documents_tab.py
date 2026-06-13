@@ -113,6 +113,10 @@ class DocumentsTab(QWidget):
     def _preview(self, path: str) -> None:
         if not path:
             return
+        cached = self.window.state.document_metrics.get(path)
+        if cached is not None:
+            self.preview.setPlainText(self._render_preview(cached))
+            return
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)  # busy indicator
         self.preview.setPlainText("Extracting…")
@@ -125,13 +129,17 @@ class DocumentsTab(QWidget):
             task_name="Extracting PDF",
         )
 
-    def _show_preview(self, info: dict) -> None:
+    def _render_preview(self, info: dict) -> str:
+        """Build the header + preview body string shown for an extracted document."""
         mode = "OCR" if info["used_ocr"] else "native text"
         header = (
             f"[{info['backend']}, {mode}] {info['pages']} page(s), "
             f"type: {info['document_type']}\n{'-' * 40}\n"
         )
-        self.preview.setPlainText(header + info["preview"])
+        return header + info["preview"]
+
+    def _show_preview(self, info: dict) -> None:
+        self.preview.setPlainText(self._render_preview(info))
         self.window.state.document_metrics[info["source"]] = info
         self.window.update_document_metrics()
         self._refresh_summary()

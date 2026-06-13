@@ -22,6 +22,33 @@ class GenerationConfig:
     do_sample: bool = True
 
 
+def ensure_pad_token(tokenizer):
+    """Make sure ``tokenizer.pad_token`` is set, falling back to eos then bos.
+
+    Some base tokenizers ship without a pad token (and occasionally without an eos
+    token too), which makes batching/generation fail later with an opaque error. This
+    pure helper picks a usable pad token, preferring an existing ``pad_token``, then
+    ``eos_token``, then ``bos_token``. It works on any duck-typed object exposing those
+    attributes and never imports transformers.
+
+    Raises:
+        RuntimeError: if the tokenizer has no usable pad/eos/bos token.
+    """
+    if getattr(tokenizer, "pad_token", None) is not None:
+        return
+    eos_token = getattr(tokenizer, "eos_token", None)
+    if eos_token is not None:
+        tokenizer.pad_token = eos_token
+        return
+    bos_token = getattr(tokenizer, "bos_token", None)
+    if bos_token is not None:
+        tokenizer.pad_token = bos_token
+        return
+    raise RuntimeError(
+        "This model/tokenizer has no usable pad/eos/bos token; cannot set a pad token."
+    )
+
+
 def _format_messages(tokenizer, messages: list[dict]) -> str:
     """Apply a native chat template, with a plain-text fallback for base tokenizers."""
     if getattr(tokenizer, "chat_template", None):
@@ -37,6 +64,27 @@ def _format_messages(tokenizer, messages: list[dict]) -> str:
     ]
     lines.append("Assistant:")
     return "\n".join(lines)
+
+
+def _contextualize_query(query: str, history: list[dict] | None, max_prev: int = 1) -> str:
+    """Prepend recent user turn(s) so anaphoric follow-ups retrieve sensibly.
+
+    A bare follow-up like "What about its cost?" embeds poorly on its own; pairing
+    it with the previous user question restores the missing subject for retrieval.
+    Only the *retrieval* query is rewritten — the generated answer still responds to
+    the user's literal question.
+    """
+    if not history:
+        return query
+    previous = [
+        str(message.get("content", "")).strip()
+        for message in history
+        if message.get("role") == "user"
+    ]
+    previous = [text for text in previous if text][-max_prev:]
+    if not previous:
+        return query
+    return " ".join([*previous, query])
 
 
 class ChatModel:
@@ -57,6 +105,7 @@ class ChatModel:
         dtype = torch.bfloat16 if info.kind == "cuda" else torch.float32
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+        ensure_pad_token(self._tokenizer)
         device_map = "auto" if info.kind == "cuda" else None
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_id, dtype=dtype, device_map=device_map
@@ -91,26 +140,39 @@ class ChatModel:
                 temperature=config.temperature,
                 top_p=config.top_p,
                 do_sample=config.do_sample,
-                pad_token_id=tok.eos_token_id,
+                pad_token_id=tok.pad_token_id,
             )
         generated = out[0][inputs["input_ids"].shape[1] :]
         return tok.decode(generated, skip_special_tokens=True).strip()
 
     def chat(self, query: str, history: list[dict] | None = None,
-             config: GenerationConfig | None = None) -> str:
-        messages = list(history or [])
+             config: GenerationConfig | None = None, system_prompt: str = "") -> str:
+        messages: list[dict] = []
+        if system_prompt.strip():
+            messages.append({"role": "system", "content": system_prompt.strip()})
+        messages.extend(history or [])
         messages.append({"role": "user", "content": query})
         return self.generate(messages, config)
 
     def rag_answer(self, query: str, index: RagIndex, top_k: int | None = None,
-                   config: GenerationConfig | None = None) -> RagAnswer:
-        """Retrieve from a knowledge base and answer with citations."""
-        contexts = index.retrieve(query, top_k=top_k)
+                   config: GenerationConfig | None = None,
+                   history: list[dict] | None = None, system_prompt: str = "") -> RagAnswer:
+        """Retrieve from a knowledge base and answer with citations.
+
+        ``history`` (prior user/assistant turns) makes follow-ups conversational: it
+        both contextualizes the retrieval query and grounds generation. ``system_prompt``
+        is prepended to the mandatory grounding/citation instructions, never replacing
+        them.
+        """
+        retrieval_query = _contextualize_query(query, history)
+        contexts = index.retrieve(retrieval_query, top_k=top_k)
         if not contexts:
             return RagAnswer(
                 answer="I couldn't find anything relevant in the knowledge base.",
                 contexts=[],
             )
-        messages = index.build_prompt(query, contexts)
+        messages = index.build_prompt(
+            query, contexts, history=history, system_prefix=system_prompt
+        )
         answer = self.generate(messages, config)
         return RagAnswer(answer=answer, contexts=contexts)

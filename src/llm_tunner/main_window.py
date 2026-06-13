@@ -162,6 +162,16 @@ class MainWindow(QMainWindow):
         self._runtime_timer.start(5000)
         QTimer.singleShot(0, self.refresh_runtime_metrics)
 
+    def closeEvent(self, event) -> None:
+        """Stop the recurring timers before the window is destroyed.
+
+        Leaving ``self._clock`` and ``self._runtime_timer`` running would let
+        them fire on widgets whose C++ objects are already being torn down.
+        """
+        self._clock.stop()
+        self._runtime_timer.stop()
+        super().closeEvent(event)
+
     def _on_device_detected(self, info: DeviceInfo) -> None:
         self.device = info
         banner = info.capability_banner()
@@ -239,9 +249,21 @@ class MainWindow(QMainWindow):
     def _finish_task(self) -> None:
         self.metrics_panel.set_value("operation", "Ready")
         self.metrics_panel.set_progress(100, 100)
-        QTimer.singleShot(2500, lambda: self.metrics_panel.set_progress(0, 100))
+        QTimer.singleShot(2500, self._reset_progress_later)
         self._active_task_name = ""
         self._task_started = None
+
+    def _reset_progress_later(self) -> None:
+        """Clear the progress bar after the post-task delay.
+
+        Tolerates the window closing before the delayed timer fires: the
+        underlying C++ panel may already be destroyed, in which case the call
+        is a harmless no-op rather than a ``RuntimeError``.
+        """
+        try:
+            self.metrics_panel.set_progress(0, 100)
+        except RuntimeError:
+            pass
 
     def _update_elapsed(self) -> None:
         if self._task_started is None:

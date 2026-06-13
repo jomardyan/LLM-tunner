@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from llm_tunner.core.device import (
     _bitsandbytes_available,
     detect_device,
+    detect_device_isolated,
     recommended_models,
 )
 
@@ -37,3 +40,19 @@ def test_bitsandbytes_checks_installed_distribution(monkeypatch):
         lambda _name: "0.49.2",
     )
     assert _bitsandbytes_available()
+
+
+def test_detect_isolated_empty_output_raises_runtimeerror(monkeypatch):
+    """Empty probe stdout must raise a clear RuntimeError, not an opaque IndexError."""
+
+    class _FakeResult:
+        stdout = "   \n  \n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(
+        "llm_tunner.core.device.subprocess.run",
+        lambda *args, **kwargs: _FakeResult(),
+    )
+    with pytest.raises(RuntimeError):
+        detect_device_isolated()

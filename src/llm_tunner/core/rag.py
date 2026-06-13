@@ -125,6 +125,20 @@ def _chunk_id(chunk: Chunk) -> str:
     return f"{source_hash}-{chunk.page_number}-{chunk.index}"
 
 
+def _recent_turns(history: list[dict] | None, max_turns: int) -> list[dict]:
+    """Return the last ``max_turns`` user/assistant turns, starting on a user turn.
+
+    Bounds prompt growth for multi-turn chat and avoids slicing into the middle of a
+    turn (which would start the history on an assistant message).
+    """
+    if not history or max_turns <= 0:
+        return []
+    recent = list(history[-max_turns * 2 :])
+    if recent and recent[0].get("role") != "user":
+        recent = recent[1:]
+    return recent
+
+
 class Embedder:
     """ONNX encoder with attention-mask mean pooling and L2 normalization."""
 
@@ -321,20 +335,38 @@ class RagIndex:
                     score=1.0 - float(dist),  # cosine distance -> similarity
                 )
             )
+        threshold = self.config.score_threshold
+        if threshold > 0:
+            out = [r for r in out if r.score >= threshold]
         return out
 
-    def build_prompt(self, query: str, contexts: list[Retrieved]) -> list[dict]:
-        """Construct chat `messages` grounding the model in retrieved context."""
+    def build_prompt(
+        self,
+        query: str,
+        contexts: list[Retrieved],
+        history: list[dict] | None = None,
+        system_prefix: str = "",
+        max_turns: int = 3,
+    ) -> list[dict]:
+        """Construct chat `messages` grounding the model in retrieved context.
+
+        Prior ``history`` turns are inserted between the grounding system message and
+        the current question so follow-ups stay conversational (capped to the last
+        ``max_turns`` turns). An optional ``system_prefix`` (user style/behaviour
+        guidance) is prepended to — never replaces — the grounding/citation rules.
+        """
         context_block = "\n\n".join(
             f"[{i + 1}] ({c.citation})\n{c.text}" for i, c in enumerate(contexts)
         )
-        system = (
+        grounding = (
             "You are a helpful assistant. Answer the user's question using ONLY the "
             "context below. Cite sources inline using the bracketed numbers, e.g. [1]. "
             "If the answer is not in the context, say you don't know.\n\n"
             f"Context:\n{context_block}"
         )
-        return [
-            {"role": "system", "content": system},
-            {"role": "user", "content": query},
-        ]
+        prefix = system_prefix.strip()
+        system = f"{prefix}\n\n{grounding}" if prefix else grounding
+        messages: list[dict] = [{"role": "system", "content": system}]
+        messages.extend(_recent_turns(history, max_turns))
+        messages.append({"role": "user", "content": query})
+        return messages

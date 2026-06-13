@@ -8,10 +8,12 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -24,7 +26,7 @@ from ..config import (
     data_dir,
 )
 from ..core.models import registry
-from ..workers.tasks import huggingface_login_task
+from ..workers.tasks import download_model_task, huggingface_login_task
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow
@@ -53,9 +55,24 @@ class SettingsTab(QWidget):
             self.model_combo.addItem(
                 f"{entry.model_id}  —  {entry.size}, {entry.license}", entry.model_id
             )
-        self._select_current(self.model_combo, self.window.state.base_model)
+        current_model = self.window.state.base_model
+        if current_model and current_model not in self._model_entries:
+            self.model_combo.addItem(f"{current_model}  —  custom", current_model)
+        self._select_current(self.model_combo, current_model)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         form.addRow("Base model:", self.model_combo)
+
+        custom_row = QHBoxLayout()
+        self.custom_model = QLineEdit()
+        self.custom_model.setPlaceholderText("Custom model ID or local path — then press Use")
+        self.use_custom_btn = QPushButton("Use")
+        self.use_custom_btn.clicked.connect(self._use_custom_model)
+        self.download_btn = QPushButton("Download")
+        self.download_btn.clicked.connect(self._download_model)
+        custom_row.addWidget(self.custom_model, 1)
+        custom_row.addWidget(self.use_custom_btn)
+        custom_row.addWidget(self.download_btn)
+        form.addRow("Custom / download:", custom_row)
 
         self.embed_combo = QComboBox()
         self.embed_combo.addItem(f"{DEFAULT_EMBEDDING_MODEL} (fast)", DEFAULT_EMBEDDING_MODEL)
@@ -70,7 +87,76 @@ class SettingsTab(QWidget):
         self.topk.valueChanged.connect(self._on_topk_changed)
         form.addRow("Retrieval top-k:", self.topk)
 
+        settings = self.window.settings
+        self.temperature = QDoubleSpinBox()
+        self.temperature.setRange(0.0, 2.0)
+        self.temperature.setSingleStep(0.1)
+        self.temperature.setDecimals(2)
+        self.temperature.setValue(settings.temperature)
+        self.temperature.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "temperature", v)
+        )
+        form.addRow("Temperature:", self.temperature)
+
+        self.top_p = QDoubleSpinBox()
+        self.top_p.setRange(0.0, 1.0)
+        self.top_p.setSingleStep(0.05)
+        self.top_p.setDecimals(2)
+        self.top_p.setValue(settings.top_p)
+        self.top_p.valueChanged.connect(lambda v: setattr(self.window.settings, "top_p", v))
+        form.addRow("Top-p:", self.top_p)
+
+        self.max_new_tokens = QSpinBox()
+        self.max_new_tokens.setRange(16, 8192)
+        self.max_new_tokens.setSingleStep(16)
+        self.max_new_tokens.setValue(settings.max_new_tokens)
+        self.max_new_tokens.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "max_new_tokens", v)
+        )
+        form.addRow("Max new tokens:", self.max_new_tokens)
+
+        self.score_threshold = QDoubleSpinBox()
+        self.score_threshold.setRange(0.0, 1.0)
+        self.score_threshold.setSingleStep(0.05)
+        self.score_threshold.setDecimals(2)
+        self.score_threshold.setToolTip("Drop retrieved chunks below this cosine similarity (0 = keep all).")
+        self.score_threshold.setValue(settings.score_threshold)
+        self.score_threshold.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "score_threshold", v)
+        )
+        form.addRow("Retrieval score threshold:", self.score_threshold)
+
+        self.chunk_size = QSpinBox()
+        self.chunk_size.setRange(128, 4096)
+        self.chunk_size.setSingleStep(64)
+        self.chunk_size.setToolTip("Applies to the next knowledge-base build.")
+        self.chunk_size.setValue(settings.chunk_size)
+        self.chunk_size.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "chunk_size", v)
+        )
+        form.addRow("Chunk size (chars):", self.chunk_size)
+
+        self.chunk_overlap = QSpinBox()
+        self.chunk_overlap.setRange(0, 1024)
+        self.chunk_overlap.setSingleStep(16)
+        self.chunk_overlap.setToolTip("Applies to the next knowledge-base build.")
+        self.chunk_overlap.setValue(settings.chunk_overlap)
+        self.chunk_overlap.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "chunk_overlap", v)
+        )
+        form.addRow("Chunk overlap (chars):", self.chunk_overlap)
+
         root.addLayout(form)
+
+        root.addWidget(QLabel("System prompt (optional — applies to chat):"))
+        self.system_prompt = QPlainTextEdit()
+        self.system_prompt.setPlaceholderText(
+            "Optional style/behaviour guidance, e.g. 'Answer concisely in bullet points.'"
+        )
+        self.system_prompt.setFixedHeight(70)
+        self.system_prompt.setPlainText(settings.system_prompt)
+        self.system_prompt.textChanged.connect(self._on_system_prompt_changed)
+        root.addWidget(self.system_prompt)
         self.model_guidance = QLabel()
         self.model_guidance.setWordWrap(True)
         self.model_guidance.setObjectName("warning")
@@ -194,3 +280,33 @@ class SettingsTab(QWidget):
 
     def _on_topk_changed(self, value: int) -> None:
         self.window.settings.top_k = value
+
+    def _on_system_prompt_changed(self) -> None:
+        self.window.settings.system_prompt = self.system_prompt.toPlainText()
+
+    def _use_custom_model(self) -> None:
+        model_id = self.custom_model.text().strip()
+        if not model_id:
+            return
+        index = self.model_combo.findData(model_id)
+        if index < 0:
+            self.model_combo.addItem(f"{model_id}  —  custom", model_id)
+            index = self.model_combo.count() - 1
+        self.custom_model.clear()
+        self.model_combo.setCurrentIndex(index)  # triggers _on_model_changed
+
+    def _download_model(self) -> None:
+        model_id = self.model_combo.currentData()
+        if not model_id:
+            return
+        self.download_btn.setEnabled(False)
+        self.window.submit(
+            download_model_task,
+            model_id,
+            on_finished=lambda: self.download_btn.setEnabled(True),
+            on_error=self._on_download_error,
+            task_name=f"Downloading {model_id}",
+        )
+
+    def _on_download_error(self, kind: str, message: str) -> None:
+        self.window.show_error(kind, message, "Model download")
