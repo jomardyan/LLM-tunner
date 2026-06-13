@@ -18,7 +18,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest
-      - run: python -m ruff check .
+      - name: Install GNU Make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install make --no-progress --yes
+      # Run via bash on every OS so Make uses a POSIX shell for recipes
+      # (matches local development and avoids cmd.exe quoting differences).
+      - name: Lint and test via Makefile
+        shell: bash
+        # UPGRADE_ARGS= forces a plain (non-eager) install so the resolved
+        # dependency set stays reproducible and the pip cache stays effective.
+        run: make ci PYTHON=python UPGRADE_ARGS=
