@@ -161,6 +161,78 @@ def test_documents_preview_uses_cached_metrics(monkeypatch):
     app.processEvents()
 
 
+def test_rag_chat_passes_history_and_generation_params(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from llm_tunner.main_window import MainWindow
+    from llm_tunner.workers.tasks import rag_query_task
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.state.current_kb = "kb"
+    window.state.base_model = "demo-model"
+    window.chat_tab.use_rag.setChecked(True)
+    # Seed a prior turn so the follow-up is conversational.
+    window.chat_tab.history = [
+        {"role": "user", "content": "Tell me about the Q3 plan"},
+        {"role": "assistant", "content": "It covers hiring and budget."},
+    ]
+    captured = {}
+
+    def fake_submit(fn, *args, **kwargs):
+        captured["fn"] = fn
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(window, "submit", fake_submit)
+    window.chat_tab.input.setText("What about its cost?")
+    window.chat_tab._send()
+
+    assert captured["fn"] is rag_query_task
+    kwargs = captured["kwargs"]
+    assert kwargs["history"] == window.chat_tab.history
+    assert kwargs["temperature"] == window.settings.temperature
+    assert kwargs["top_p"] == window.settings.top_p
+    assert kwargs["max_new_tokens"] == window.settings.max_new_tokens
+    assert "system_prompt" in kwargs
+    assert "score_threshold" in kwargs
+
+    window.close()
+    app.processEvents()
+
+
+def test_finetune_passes_hyperparameter_overrides(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from llm_tunner.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.finetune_tab._dataset_rows = [{"messages": []}]
+    window.finetune_tab.lora_r.setValue(8)
+    window.finetune_tab.epochs.setValue(2.0)
+    captured = {}
+
+    def fake_submit(fn, *args, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(window, "submit", fake_submit)
+    window.finetune_tab._train()
+
+    overrides = captured["kwargs"]["train_overrides"]
+    assert overrides["lora_r"] == 8
+    assert overrides["num_train_epochs"] == 2.0
+    assert "learning_rate" in overrides
+
+    window.close()
+    app.processEvents()
+
+
 def test_document_metrics_are_aggregated():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

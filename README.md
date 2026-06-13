@@ -177,12 +177,19 @@ The included `Makefile` exposes the same commands on Windows, Linux, and macOS w
 GNU Make is available:
 
 ```bash
-make help
-make setup
-make install
-make check
-make run
+make help        # list every target
+make setup       # create .venv and install the dev toolchain
+make install     # full runtime stack
+make check       # lint + tests + byte-compile (the local gate)
+make run         # launch the app
 ```
+
+Quality and release targets are also available: `make format` / `make format-check`
+(Ruff formatting), `make coverage` (tests with an HTML coverage report), `make type-check`
+(mypy — best-effort, currently non-gating), `make audit` (pip-audit vulnerability scan),
+`make ci` (mirror the GitHub Actions checks locally), and `make build` / `make build-check`
+(build the wheel and source distribution, then validate them with twine). Run `make help`
+for the full, self-documenting list.
 
 The Makefile creates and uses `.venv` automatically, so activation is not required and
 packages are not installed into the global or Microsoft Store Python user directory.
@@ -204,7 +211,8 @@ make check VENV=/opt/venvs/llm-tunner
 ```
 
 The RAG and training smoke tests activate automatically when their extras are installed.
-CI runs the core suite and an offscreen Qt startup smoke test on both Windows and Linux.
+CI runs `make ci` (Ruff lint plus the test suite, including an offscreen Qt startup smoke
+test) on both Windows and Linux.
 
 ## License & model notes
 

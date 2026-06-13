@@ -97,6 +97,13 @@ class ChatTab(QWidget):
         self._append("You", query)
         self.send_btn.setEnabled(False)
 
+        settings = self.window.settings
+        gen = {
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "max_new_tokens": settings.max_new_tokens,
+            "system_prompt": settings.system_prompt,
+        }
         model_id = self.window.state.base_model
         adapter = self.window.state.adapter_path
         if self.use_rag.isChecked() and self.window.state.current_kb:
@@ -107,7 +114,10 @@ class ChatTab(QWidget):
                 self.window.state.current_kb,
                 query,
                 self.window.state.embedding_model,
-                self.window.settings.top_k,
+                settings.top_k,
+                history=list(self.history),
+                score_threshold=settings.score_threshold,
+                **gen,
                 on_result=lambda result: self._on_answer(result, query),
                 on_log=self.window.notify,
                 on_finished=lambda: self.send_btn.setEnabled(True),
@@ -121,6 +131,7 @@ class ChatTab(QWidget):
                 adapter,
                 query,
                 list(self.history),
+                **gen,
                 on_result=lambda r: self._on_answer(r, query),
                 on_log=self.window.notify,
                 on_finished=lambda: self.send_btn.setEnabled(True),

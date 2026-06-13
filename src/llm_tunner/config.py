@@ -66,16 +66,25 @@ MODEL_REGISTRY: list[tuple[str, str, str, str]] = [
 
 @dataclass
 class ChunkConfig:
-    """Text chunking parameters for RAG indexing and QA generation."""
+    """Text chunking parameters for RAG indexing and QA generation.
 
-    chunk_size: int = 512  # tokens (recursive splitter default per research)
-    chunk_overlap: int = 64
+    ``chunk_size`` and ``chunk_overlap`` are measured in *characters* by default,
+    matching :func:`llm_tunner.core.chunking.chunk_text` whose default length
+    function is :func:`len`. Passing a tokenizer-based ``length_fn`` to the
+    chunker switches measurement to tokens instead. With these character
+    defaults, 512 chars is roughly ~100 tokens of English text.
+    """
+
+    chunk_size: int = 512  # characters by default (see chunk_text length_fn)
+    chunk_overlap: int = 64  # characters by default (see chunk_text length_fn)
 
 
 @dataclass
 class RagConfig:
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     top_k: int = 4
+    # Drop retrieved chunks whose cosine similarity is below this (0.0 = keep all).
+    score_threshold: float = 0.0
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
 
 

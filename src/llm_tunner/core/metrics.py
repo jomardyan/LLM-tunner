@@ -33,6 +33,7 @@ def collect_runtime_metrics() -> RuntimeMetrics:
             ],
             capture_output=True,
             check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             text=True,
             timeout=5,
         )
