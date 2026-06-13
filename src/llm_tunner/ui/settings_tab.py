@@ -146,6 +146,24 @@ class SettingsTab(QWidget):
         )
         form.addRow("Chunk overlap (chars):", self.chunk_overlap)
 
+        self.onnx_provider = QComboBox()
+        for label, value in (
+            ("Auto (fastest available)", "auto"),
+            ("CPU only", "cpu"),
+            ("DirectML — Windows iGPU/GPU", "directml"),
+            ("OpenVINO — Intel (auto)", "openvino"),
+            ("OpenVINO MULTI — Intel CPU+iGPU", "openvino-multi"),
+            ("CUDA — NVIDIA", "cuda"),
+        ):
+            self.onnx_provider.addItem(label, value)
+        self.onnx_provider.setToolTip(
+            "Embedding accelerator. Needs a matching onnxruntime build "
+            "(onnxruntime-directml / onnxruntime-openvino); falls back to CPU if absent."
+        )
+        self._select_current(self.onnx_provider, settings.onnx_provider)
+        self.onnx_provider.currentIndexChanged.connect(self._on_provider_changed)
+        form.addRow("Embedding accelerator:", self.onnx_provider)
+
         root.addLayout(form)
 
         root.addWidget(QLabel("System prompt (optional — applies to chat):"))
@@ -280,6 +298,9 @@ class SettingsTab(QWidget):
 
     def _on_topk_changed(self, value: int) -> None:
         self.window.settings.top_k = value
+
+    def _on_provider_changed(self) -> None:
+        self.window.settings.onnx_provider = self.onnx_provider.currentData()
 
     def _on_system_prompt_changed(self) -> None:
         self.window.settings.system_prompt = self.system_prompt.toPlainText()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -139,11 +140,80 @@ def _recent_turns(history: list[dict] | None, max_turns: int) -> list[dict]:
     return recent
 
 
-class Embedder:
-    """ONNX encoder with attention-mask mean pooling and L2 normalization."""
+# ONNX Runtime execution providers, fastest first; CPU is always the floor. An
+# accelerated provider only appears here if the matching onnxruntime build is installed
+# (onnxruntime-directml / onnxruntime-openvino / onnxruntime-gpu), so this degrades
+# gracefully to CPU otherwise.
+_ONNX_PROVIDER_PRIORITY = (
+    "DmlExecutionProvider",  # Windows: any DirectX-12 GPU (Intel/AMD/NVIDIA iGPU+dGPU)
+    "OpenVINOExecutionProvider",  # Intel CPU/iGPU/NPU (supports simultaneous CPU+iGPU)
+    "CUDAExecutionProvider",
+    "CoreMLExecutionProvider",  # Apple Silicon
+    "CPUExecutionProvider",
+)
 
-    def __init__(self, model_name: str) -> None:
+
+def onnx_providers(preference: str = "auto") -> list:
+    """Resolve the ONNX Runtime providers list for the embedder.
+
+    With ``preference="auto"`` (default) the fastest installed accelerator is used and CPU
+    is appended as a fallback. An explicit preference (``cpu``/``directml``/``openvino``/
+    ``openvino-multi``/``cuda``/``coreml``) is honored only when that provider is actually
+    installed, otherwise it falls through to auto. OpenVINO entries carry a ``device_type``
+    so the integrated GPU is used (``MULTI:GPU,CPU`` runs CPU and iGPU simultaneously).
+    The result is always filtered to installed providers and ends with CPU, so a missing
+    accelerator never errors — it just runs on CPU.
+    """
+    try:
+        import onnxruntime  # type: ignore
+
+        available = set(onnxruntime.get_available_providers())
+    except Exception:
+        return ["CPUExecutionProvider"]
+    available.add("CPUExecutionProvider")
+    cpu = "CPUExecutionProvider"
+    pref = (preference or "auto").strip().lower()
+
+    def ov(device_type: str):
+        return ("OpenVINOExecutionProvider", {"device_type": device_type})
+
+    explicit = {
+        "cpu": [cpu],
+        "directml": ["DmlExecutionProvider", cpu] if "DmlExecutionProvider" in available else None,
+        "dml": ["DmlExecutionProvider", cpu] if "DmlExecutionProvider" in available else None,
+        "cuda": ["CUDAExecutionProvider", cpu] if "CUDAExecutionProvider" in available else None,
+        "coreml": ["CoreMLExecutionProvider", cpu]
+        if "CoreMLExecutionProvider" in available
+        else None,
+        "openvino": [ov("AUTO"), cpu] if "OpenVINOExecutionProvider" in available else None,
+        "openvino-multi": [ov("MULTI:GPU,CPU"), cpu]
+        if "OpenVINOExecutionProvider" in available
+        else None,
+    }
+    if pref in explicit and explicit[pref] is not None:
+        return explicit[pref]
+
+    ordered: list = []
+    for name in _ONNX_PROVIDER_PRIORITY:
+        if name not in available:
+            continue
+        ordered.append(ov("AUTO") if name == "OpenVINOExecutionProvider" else name)
+    if not any((p[0] if isinstance(p, tuple) else p) == cpu for p in ordered):
+        ordered.append(cpu)
+    return ordered
+
+
+class Embedder:
+    """ONNX encoder with attention-mask mean pooling and L2 normalization.
+
+    Runs on the fastest available ONNX Runtime provider (integrated/discrete GPU when an
+    accelerated runtime is installed), falling back to CPU. ``provider`` selects/forces a
+    backend; see :func:`onnx_providers`.
+    """
+
+    def __init__(self, model_name: str, provider: str = "auto") -> None:
         self.model_name = model_name
+        self.provider = provider
         self._session = None
         self._tokenizer = None
 
@@ -178,9 +248,20 @@ class Embedder:
             )
             pad_id = self._tokenizer.token_to_id(pad_token) or 0
             self._tokenizer.enable_padding(pad_id=pad_id, pad_token=pad_token)
+
+            providers = onnx_providers(self.provider)
+            options = onnxruntime.SessionOptions()
+            # Use all CPU cores for ops that fall back to (or stay on) the CPU provider.
+            options.intra_op_num_threads = os.cpu_count() or 0
+            # DirectML does not support ORT's memory pattern planner.
+            if any(
+                (p[0] if isinstance(p, tuple) else p) == "DmlExecutionProvider" for p in providers
+            ):
+                options.enable_mem_pattern = False
             self._session = onnxruntime.InferenceSession(
                 model_path,
-                providers=["CPUExecutionProvider"],
+                sess_options=options,
+                providers=providers,
             )
         return self._tokenizer, self._session
 
@@ -227,7 +308,7 @@ class RagIndex:
         self.name = name
         self.config = config or RagConfig()
         self.path = kb_dir() / _storage_name(name)
-        self._embedder = Embedder(self.config.embedding_model)
+        self._embedder = Embedder(self.config.embedding_model, provider=self.config.onnx_provider)
         self._client = None
         self._collection = None
 

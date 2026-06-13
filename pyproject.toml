@@ -54,6 +54,18 @@ train = [
 gpu = [
     "bitsandbytes>=0.49.2,<0.50; platform_system == 'Linux' or (platform_system == 'Windows' and platform_machine == 'AMD64')",
 ]
+# Integrated/discrete-GPU acceleration for RAG embeddings (ONNX Runtime). Each ships an
+# accelerated `onnxruntime` build that is MUTUALLY EXCLUSIVE with the plain `onnxruntime`
+# in [rag] — install ONE of these *instead of* it, e.g.:
+#   pip uninstall -y onnxruntime && pip install -e ".[directml]"   # Windows iGPU/GPU
+#   pip uninstall -y onnxruntime && pip install -e ".[openvino]"   # Intel CPU+iGPU
+# The app auto-detects whichever provider is present and falls back to CPU.
+directml = [
+    "onnxruntime-directml>=1.20,<2; platform_system == 'Windows'",
+]
+openvino = [
+    "onnxruntime-openvino>=1.20,<2",
+]
 # Everything for a full local install.
 all = [
     "llm-tunner[rag,train]",

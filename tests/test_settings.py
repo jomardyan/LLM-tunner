@@ -40,6 +40,13 @@ def test_retrieval_and_chunk_settings_round_trip(monkeypatch):
     assert s.chunk_overlap == 128
 
 
+def test_onnx_provider_setting_round_trip(monkeypatch):
+    s = _mem_settings(monkeypatch)
+    assert s.onnx_provider == "auto"
+    s.onnx_provider = "openvino-multi"
+    assert s.onnx_provider == "openvino-multi"
+
+
 def test_train_hyperparameter_settings_round_trip(monkeypatch):
     s = _mem_settings(monkeypatch)
     assert s.learning_rate == 2e-4

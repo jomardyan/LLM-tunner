@@ -92,6 +92,24 @@ The app remains usable on Windows without CUDA: RAG runs on CPU and fine-tuning 
 back to plain LoRA for small models. Windows on ARM is not currently supported for
 QLoRA.
 
+### Integrated-GPU (iGPU) acceleration for RAG
+
+Embedding (the heavy part of building and querying a knowledge base) can run on an
+integrated or discrete GPU via ONNX Runtime. This needs an accelerated `onnxruntime`
+build, which **replaces** the default CPU build, so uninstall it first:
+
+```powershell
+python -m pip uninstall -y onnxruntime
+python -m pip install -e ".[directml]"   # any DirectX-12 GPU on Windows (Intel/AMD/NVIDIA)
+# or, on Intel hardware (runs CPU + iGPU simultaneously):
+python -m pip install -e ".[openvino]"
+```
+
+Then pick the backend in **Settings → Embedding accelerator** (default *Auto* uses the
+fastest available provider). The app always falls back to CPU when no accelerator is
+present, so this is purely opt-in. Note: chat and QLoRA fine-tuning still use CUDA/CPU —
+only embeddings are iGPU-accelerated.
+
 The app uses Qt for Python / PySide6 Essentials 6.11 and avoids the unnecessary PySide6
 Addons bundle. If path-length limits affect ML dependencies or model downloads, use a
 short virtual-environment/cache location or enable Windows long paths. Short cache

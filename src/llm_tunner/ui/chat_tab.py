@@ -117,6 +117,7 @@ class ChatTab(QWidget):
                 settings.top_k,
                 history=list(self.history),
                 score_threshold=settings.score_threshold,
+                onnx_provider=settings.onnx_provider,
                 **gen,
                 on_result=lambda result: self._on_answer(result, query),
                 on_log=self.window.notify,

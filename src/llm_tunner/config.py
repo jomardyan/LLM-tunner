@@ -85,6 +85,9 @@ class RagConfig:
     top_k: int = 4
     # Drop retrieved chunks whose cosine similarity is below this (0.0 = keep all).
     score_threshold: float = 0.0
+    # ONNX Runtime execution provider for embeddings: "auto" picks the fastest installed
+    # accelerator (iGPU/dGPU) with CPU fallback. See core.rag.onnx_providers.
+    onnx_provider: str = "auto"
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
 
 

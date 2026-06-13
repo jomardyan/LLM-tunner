@@ -104,6 +104,7 @@ def _build_kb(
     signals,
     chunk_size: int = 512,
     chunk_overlap: int = 64,
+    onnx_provider: str = "auto",
 ) -> dict:
     """Embed and index PDFs in the current process."""
     from ..config import ChunkConfig, RagConfig
@@ -115,6 +116,7 @@ def _build_kb(
     require_rag_dependencies()
     config = RagConfig(
         embedding_model=embedding_model,
+        onnx_provider=onnx_provider,
         chunk=ChunkConfig(chunk_size=int(chunk_size), chunk_overlap=int(chunk_overlap)),
     )
     index = RagIndex(kb_name, config=config)
@@ -176,6 +178,13 @@ class _ProcessSignals:
         self.log = _JsonLineSignal(log_path)
 
 
+class _ChildLogSignals:
+    """Child-side signals exposing only ``log`` — chat/RAG tasks emit no progress."""
+
+    def __init__(self, log_path: Path) -> None:
+        self.log = _JsonLineSignal(log_path)
+
+
 def _build_kb_child(
     kb_name: str,
     pdf_paths: list[str],
@@ -186,6 +195,7 @@ def _build_kb_child(
     error_path: str,
     chunk_size: int = 512,
     chunk_overlap: int = 64,
+    onnx_provider: str = "auto",
 ) -> None:
     """Build a knowledge base on a process main thread for native Arrow safety."""
     from ..diagnostics import configure_crash_diagnostics, configure_logging
@@ -202,6 +212,7 @@ def _build_kb_child(
             signals=signals,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            onnx_provider=onnx_provider,
         )
         _write_json(Path(result_path), result)
     except BaseException as exc:  # noqa: BLE001 - serialize child failures to the GUI
@@ -239,6 +250,7 @@ def _build_kb_isolated(
     signals,
     chunk_size: int = 512,
     chunk_overlap: int = 64,
+    onnx_provider: str = "auto",
 ) -> dict:
     import multiprocessing
 
@@ -262,6 +274,7 @@ def _build_kb_isolated(
             str(error_path),
             int(chunk_size),
             int(chunk_overlap),
+            onnx_provider,
         ),
         name="llm-tunner-knowledge-builder",
     )
@@ -304,7 +317,8 @@ def _build_kb_isolated(
 
 
 def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, signals,
-                  chunk_size: int = 512, chunk_overlap: int = 64) -> dict:
+                  chunk_size: int = 512, chunk_overlap: int = 64,
+                  onnx_provider: str = "auto") -> dict:
     """Embed and index PDFs, isolating Windows native ML imports from Qt threads."""
     if sys.platform == "win32":
         return _build_kb_isolated(
@@ -314,23 +328,76 @@ def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, s
             signals=signals,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            onnx_provider=onnx_provider,
         )
     return _build_kb(
         kb_name, pdf_paths, embedding_model, signals=signals,
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap, onnx_provider=onnx_provider,
     )
 
 
-def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query: str,
-                   embedding_model: str, top_k: int, *, signals,
-                   history: list[dict] | None = None, system_prompt: str = "",
-                   temperature: float = 0.7, top_p: float = 0.9,
-                   max_new_tokens: int = 512, score_threshold: float = 0.0) -> dict:
-    """Answer a query against a knowledge base with citations.
+def _run_query_isolated(target, core_args: tuple, *, signals) -> dict:
+    """Run a chat/RAG query in a spawned child process, replaying its log lines.
 
-    ``history`` enables multi-turn (conversational) retrieval and generation; the
-    generation/retrieval knobs are forwarded from the user's settings.
+    On Windows, importing the native inference stack (onnxruntime/torch/transformers)
+    on a Qt ``QThreadPool`` worker thread access-violates the host process; the
+    knowledge-base and fine-tune paths already sidestep this by running in a spawned
+    subprocess, and chat/RAG queries take the same route here. ``target`` is a
+    module-level child function whose trailing three positional args are
+    ``(log_path, result_path, error_path)``; ``core_args`` are the preceding args.
     """
+    import multiprocessing
+
+    from ..config import data_dir
+
+    runtime_dir = data_dir() / "runtime" / f"query-{uuid.uuid4().hex}"
+    runtime_dir.mkdir(parents=True)
+    log_path = runtime_dir / "log.jsonl"
+    result_path = runtime_dir / "result.json"
+    error_path = runtime_dir / "error.json"
+    process = multiprocessing.get_context("spawn").Process(
+        target=target,
+        args=(*core_args, str(log_path), str(result_path), str(error_path)),
+        name="llm-tunner-query",
+    )
+    process.start()
+    log_offset = 0
+    try:
+        while process.is_alive():
+            log_offset = _replay_json_lines(log_path, log_offset, signals.log.emit)
+            process.join(timeout=0.2)
+        log_offset = _replay_json_lines(log_path, log_offset, signals.log.emit)
+        process.join()
+
+        if result_path.exists():
+            return json.loads(result_path.read_text(encoding="utf-8"))
+        if error_path.exists():
+            error = json.loads(error_path.read_text(encoding="utf-8"))
+            raise RuntimeError(
+                f"{error['kind']}: {error['message']}\n\nChild traceback:\n{error['traceback']}"
+            )
+        raise RuntimeError(
+            f"Chat process exited with code {process.exitcode} before producing a "
+            "result. See ~/.llm-tunner/logs/native-crash.log."
+        )
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                # A still-running child holds Windows file locks that make rmtree fail.
+                process.kill()
+                process.join(timeout=2)
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+def _rag_query(model_id: str, adapter_path: str | None, kb_name: str, query: str,
+               embedding_model: str, top_k: int, *, signals,
+               history: list[dict] | None = None, system_prompt: str = "",
+               temperature: float = 0.7, top_p: float = 0.9,
+               max_new_tokens: int = 512, score_threshold: float = 0.0,
+               onnx_provider: str = "auto") -> dict:
+    """Retrieve from a knowledge base and answer with citations (in current process)."""
     from ..config import RagConfig
     from ..core.inference import ChatModel
     from ..core.rag import RagIndex, require_rag_dependencies
@@ -340,7 +407,8 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
     signals.log.emit("Loading model…")
     model = ChatModel(model_id, adapter_path=adapter_path)
     index = RagIndex(kb_name, config=RagConfig(
-        embedding_model=embedding_model, top_k=top_k, score_threshold=score_threshold
+        embedding_model=embedding_model, top_k=top_k, score_threshold=score_threshold,
+        onnx_provider=onnx_provider,
     ))
     signals.log.emit("Retrieving and generating…")
     result = model.rag_answer(
@@ -357,11 +425,75 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
     }
 
 
-def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
-                    history: list[dict], *, signals, system_prompt: str = "",
-                    temperature: float = 0.7, top_p: float = 0.9,
-                    max_new_tokens: int = 512) -> dict:
-    """Chat with the model without retrieval."""
+def _rag_query_child(model_id, adapter_path, kb_name, query, embedding_model, top_k,
+                     history, system_prompt, temperature, top_p, max_new_tokens,
+                     score_threshold, onnx_provider, log_path, result_path,
+                     error_path) -> None:
+    """Answer a RAG query on a process main thread, for native import safety."""
+    from ..diagnostics import configure_crash_diagnostics, configure_logging
+
+    os.environ.setdefault("HF_DATASETS_DISABLE_PROGRESS_BARS", "1")
+    configure_crash_diagnostics()
+    configure_logging()
+    signals = _ChildLogSignals(Path(log_path))
+    try:
+        result = _rag_query(
+            model_id, adapter_path, kb_name, query, embedding_model, top_k,
+            signals=signals, history=history, system_prompt=system_prompt,
+            temperature=temperature, top_p=top_p, max_new_tokens=max_new_tokens,
+            score_threshold=score_threshold, onnx_provider=onnx_provider,
+        )
+        _write_json(Path(result_path), result)
+    except BaseException as exc:  # noqa: BLE001 - serialize child failures to the GUI
+        _write_json(
+            Path(error_path),
+            {
+                "kind": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        os._exit(1)
+    # The result is durably written; skip native teardown (onnxruntime/torch), which
+    # can access-violate on Windows, by exiting hard.
+    os._exit(0)
+
+
+def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query: str,
+                   embedding_model: str, top_k: int, *, signals,
+                   history: list[dict] | None = None, system_prompt: str = "",
+                   temperature: float = 0.7, top_p: float = 0.9,
+                   max_new_tokens: int = 512, score_threshold: float = 0.0,
+                   onnx_provider: str = "auto") -> dict:
+    """Answer a query against a knowledge base with citations.
+
+    ``history`` enables multi-turn (conversational) retrieval and generation; the
+    generation/retrieval knobs are forwarded from the user's settings. ``onnx_provider``
+    selects the embedding execution provider (iGPU/CPU). On Windows the native inference
+    stack runs in a spawned subprocess, because importing onnxruntime/torch on a Qt
+    worker thread access-violates the host process.
+    """
+    if sys.platform == "win32":
+        return _run_query_isolated(
+            _rag_query_child,
+            (model_id, adapter_path, kb_name, query, embedding_model, top_k,
+             history, system_prompt, temperature, top_p, max_new_tokens, score_threshold,
+             onnx_provider),
+            signals=signals,
+        )
+    return _rag_query(
+        model_id, adapter_path, kb_name, query, embedding_model, top_k,
+        signals=signals, history=history, system_prompt=system_prompt,
+        temperature=temperature, top_p=top_p, max_new_tokens=max_new_tokens,
+        score_threshold=score_threshold, onnx_provider=onnx_provider,
+    )
+
+
+def _plain_chat(model_id: str, adapter_path: str | None, query: str,
+                history: list[dict], *, signals, system_prompt: str = "",
+                temperature: float = 0.7, top_p: float = 0.9,
+                max_new_tokens: int = 512) -> dict:
+    """Chat with the model without retrieval (in current process)."""
     from ..core.inference import ChatModel
 
     started = time.perf_counter()
@@ -380,6 +512,61 @@ def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
         "contexts": 0,
         "response_words": len(answer.split()),
     }
+
+
+def _plain_chat_child(model_id, adapter_path, query, history, system_prompt,
+                      temperature, top_p, max_new_tokens,
+                      log_path, result_path, error_path) -> None:
+    """Run a retrieval-free chat on a process main thread, for native import safety."""
+    from ..diagnostics import configure_crash_diagnostics, configure_logging
+
+    os.environ.setdefault("HF_DATASETS_DISABLE_PROGRESS_BARS", "1")
+    configure_crash_diagnostics()
+    configure_logging()
+    signals = _ChildLogSignals(Path(log_path))
+    try:
+        result = _plain_chat(
+            model_id, adapter_path, query, history, signals=signals,
+            system_prompt=system_prompt, temperature=temperature,
+            top_p=top_p, max_new_tokens=max_new_tokens,
+        )
+        _write_json(Path(result_path), result)
+    except BaseException as exc:  # noqa: BLE001 - serialize child failures to the GUI
+        _write_json(
+            Path(error_path),
+            {
+                "kind": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        os._exit(1)
+    # The result is durably written; skip native teardown (torch), which can
+    # access-violate on Windows, by exiting hard.
+    os._exit(0)
+
+
+def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
+                    history: list[dict], *, signals, system_prompt: str = "",
+                    temperature: float = 0.7, top_p: float = 0.9,
+                    max_new_tokens: int = 512) -> dict:
+    """Chat with the model without retrieval.
+
+    On Windows the native inference stack runs in a spawned subprocess, because
+    importing torch/transformers on a Qt worker thread access-violates the host process.
+    """
+    if sys.platform == "win32":
+        return _run_query_isolated(
+            _plain_chat_child,
+            (model_id, adapter_path, query, history, system_prompt,
+             temperature, top_p, max_new_tokens),
+            signals=signals,
+        )
+    return _plain_chat(
+        model_id, adapter_path, query, history, signals=signals,
+        system_prompt=system_prompt, temperature=temperature,
+        top_p=top_p, max_new_tokens=max_new_tokens,
+    )
 
 
 def generate_dataset_task(

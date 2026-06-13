@@ -198,6 +198,7 @@ def test_rag_chat_passes_history_and_generation_params(monkeypatch):
     assert kwargs["max_new_tokens"] == window.settings.max_new_tokens
     assert "system_prompt" in kwargs
     assert "score_threshold" in kwargs
+    assert kwargs["onnx_provider"] == window.settings.onnx_provider
 
     window.close()
     app.processEvents()

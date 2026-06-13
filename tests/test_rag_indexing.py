@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 from llm_tunner.core.chunking import Chunk
 from llm_tunner.core.rag import (
     RagIndex,
@@ -9,6 +12,7 @@ from llm_tunner.core.rag import (
     _recent_turns,
     _storage_name,
     missing_rag_dependencies,
+    onnx_providers,
     rag_install_command,
     require_rag_dependencies,
 )
@@ -126,3 +130,52 @@ def test_build_prompt_backward_compatible_without_history():
     ctx = Retrieved(text="text", source="/d/f.pdf", page_number=1, score=0.5)
     messages = index.build_prompt("q", [ctx])
     assert [m["role"] for m in messages] == ["system", "user"]
+
+
+def _fake_ort(monkeypatch, providers):
+    """Inject a fake onnxruntime exposing get_available_providers (env-independent)."""
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        types.SimpleNamespace(get_available_providers=lambda: list(providers)),
+    )
+
+
+def test_onnx_providers_auto_prefers_accelerator_then_cpu(monkeypatch):
+    _fake_ort(monkeypatch, ["DmlExecutionProvider", "CPUExecutionProvider"])
+    assert onnx_providers("auto") == ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+
+def test_onnx_providers_auto_cpu_only(monkeypatch):
+    _fake_ort(monkeypatch, ["CPUExecutionProvider"])
+    assert onnx_providers("auto") == ["CPUExecutionProvider"]
+
+
+def test_onnx_providers_auto_openvino_carries_device_type(monkeypatch):
+    _fake_ort(monkeypatch, ["OpenVINOExecutionProvider", "CPUExecutionProvider"])
+    providers = onnx_providers("auto")
+    assert providers[0] == ("OpenVINOExecutionProvider", {"device_type": "AUTO"})
+    assert providers[-1] == "CPUExecutionProvider"
+
+
+def test_onnx_providers_openvino_multi_is_simultaneous_cpu_igpu(monkeypatch):
+    _fake_ort(monkeypatch, ["OpenVINOExecutionProvider", "CPUExecutionProvider"])
+    providers = onnx_providers("openvino-multi")
+    assert providers[0] == ("OpenVINOExecutionProvider", {"device_type": "MULTI:GPU,CPU"})
+    assert providers[-1] == "CPUExecutionProvider"
+
+
+def test_onnx_providers_cpu_is_forced(monkeypatch):
+    _fake_ort(monkeypatch, ["DmlExecutionProvider", "CPUExecutionProvider"])
+    assert onnx_providers("cpu") == ["CPUExecutionProvider"]
+
+
+def test_onnx_providers_unavailable_choice_falls_back_to_cpu(monkeypatch):
+    # Asked for DirectML but only CPU is installed -> graceful CPU fallback, no error.
+    _fake_ort(monkeypatch, ["CPUExecutionProvider"])
+    assert onnx_providers("directml") == ["CPUExecutionProvider"]
+
+
+def test_onnx_providers_no_onnxruntime_returns_cpu(monkeypatch):
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)  # import raises -> CPU floor
+    assert onnx_providers("auto") == ["CPUExecutionProvider"]

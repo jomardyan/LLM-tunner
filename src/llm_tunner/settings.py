@@ -30,6 +30,8 @@ _DEFAULTS: dict[str, Any] = {
     "score_threshold": 0.0,
     "chunk_size": 512,
     "chunk_overlap": 64,
+    # ONNX embedding execution provider: auto|cpu|directml|openvino|openvino-multi|cuda.
+    "onnx_provider": "auto",
     # Fine-tuning hyperparameters.
     "learning_rate": 2e-4,
     "num_train_epochs": 1.0,
@@ -181,6 +183,14 @@ class Settings:
     @chunk_overlap.setter
     def chunk_overlap(self, v: int) -> None:
         self.set("chunk_overlap", int(v))
+
+    @property
+    def onnx_provider(self) -> str:
+        return str(self.get("onnx_provider"))
+
+    @onnx_provider.setter
+    def onnx_provider(self, v: str) -> None:
+        self.set("onnx_provider", str(v))
 
     # Fine-tuning hyperparameters ---------------------------------------------------
     @property
