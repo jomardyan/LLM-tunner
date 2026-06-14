@@ -6,10 +6,21 @@ These are *defaults*; values the user changes are persisted via :mod:`llm_tunner
 from __future__ import annotations
 
 import os
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 APP_NAME = "LLM-tunner"
+
+
+def timestamped_name(prefix: str) -> str:
+    """A sortable, collision-free artifact name: ``<prefix>_YYYYMMDD-HHMMSS_<rand>``.
+
+    Used for generated datasets and trained adapters so each run is preserved on disk
+    rather than overwriting the previous one (even two runs within the same second).
+    """
+    return f"{prefix}_{time.strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:6]}"
 ORG_NAME = "LLM-tunner"
 
 

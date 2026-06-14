@@ -49,6 +49,14 @@ def main() -> int:
     os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
     os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
+    # Apply a user-chosen data directory before anything resolves storage paths
+    # (logs, knowledge bases, adapters). An explicit LLM_TUNNER_HOME env var wins.
+    from .settings import Settings
+
+    _data_dir = Settings().data_dir
+    if _data_dir and not os.environ.get("LLM_TUNNER_HOME"):
+        os.environ["LLM_TUNNER_HOME"] = _data_dir
+
     from PySide6.QtWidgets import QApplication
 
     from .config import APP_NAME, ORG_NAME

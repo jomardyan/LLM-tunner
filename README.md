@@ -171,6 +171,34 @@ Failures are written to a rotating diagnostics log and shown with a short explan
 an incident ID, technical details, and a suggested recovery action. Open the log folder
 from **Settings → Open diagnostics folder**.
 
+### Command-line interface (headless / Ubuntu)
+
+Every core workflow is also available without a display through `llm-tunner-cli`, which
+reuses the same pipelines as the GUI. Progress/logs go to stderr; results (answers,
+paths) go to stdout, so it composes in scripts and pipes.
+
+```bash
+llm-tunner-cli devices                                   # detected hardware + model suggestions
+llm-tunner-cli build-kb --name docs --pdf a.pdf b.pdf    # build/update a knowledge base
+llm-tunner-cli chat --kb docs --query "What is X?"       # RAG answer (omit --kb / use --no-rag for plain)
+llm-tunner-cli gen-dataset --pdf a.pdf [--use-llm]       # synthesize a fine-tuning dataset
+llm-tunner-cli finetune --dataset ~/.llm-tunner/datasets/<file>.jsonl --model <id>
+llm-tunner-cli list                                      # knowledge bases, datasets, adapters on disk
+```
+
+Each command accepts `--data-dir` (overrides `LLM_TUNNER_HOME` for that run) and `--quiet`;
+run `llm-tunner-cli <command> --help` for the full option list. The CLI needs the same
+extras as the feature it uses (`.[rag]` for build/chat, `.[train]` for fine-tune).
+
+### Storage — nothing is overwritten
+
+All durable outputs live under the data directory (`~/.llm-tunner` by default, overridable
+via `LLM_TUNNER_HOME` or **Settings → Storage → Data folder**, applied on next launch):
+knowledge bases (`knowledge_bases/`), generated datasets (`datasets/`), trained adapters
+(`adapters/`), and logs (`logs/`). Each **generated dataset** and **trained adapter** gets
+a unique timestamped name, so re-running never overwrites a previous result. Settings shows
+open-folder shortcuts and the last-saved dataset/adapter paths.
+
 ### Hugging Face authentication
 
 Public models work without authentication, but Hugging Face applies lower download rate

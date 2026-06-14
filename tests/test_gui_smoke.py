@@ -210,12 +210,15 @@ def test_finetune_passes_hyperparameter_overrides(monkeypatch):
     from PySide6.QtWidgets import QApplication
 
     from llm_tunner.main_window import MainWindow
+    from llm_tunner.settings import _MemoryBackend
 
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
+    # Hyperparameters now live in Settings; the Fine-tune tab reads them at train time.
+    window.settings._backend = _MemoryBackend()  # avoid touching the real QSettings store
+    window.settings.lora_r = 8
+    window.settings.num_train_epochs = 2.0
     window.finetune_tab._dataset_rows = [{"messages": []}]
-    window.finetune_tab.lora_r.setValue(8)
-    window.finetune_tab.epochs.setValue(2.0)
     captured = {}
 
     def fake_submit(fn, *args, **kwargs):

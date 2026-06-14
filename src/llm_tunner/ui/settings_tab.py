@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -23,7 +24,10 @@ from PySide6.QtWidgets import (
 from ..config import (
     DEFAULT_EMBEDDING_MODEL,
     HIGH_QUALITY_EMBEDDING_MODEL,
+    adapters_dir,
     data_dir,
+    datasets_dir,
+    kb_dir,
 )
 from ..core.models import registry
 from ..workers.tasks import download_model_task, huggingface_login_task
@@ -164,6 +168,77 @@ class SettingsTab(QWidget):
         self.onnx_provider.currentIndexChanged.connect(self._on_provider_changed)
         form.addRow("Embedding accelerator:", self.onnx_provider)
 
+        # QLoRA fine-tuning hyperparameters (consolidated here; the Fine-tune tab reads
+        # these persisted values at train time).
+        self.learning_rate = QDoubleSpinBox()
+        self.learning_rate.setRange(0.000001, 1.0)
+        self.learning_rate.setDecimals(6)
+        self.learning_rate.setSingleStep(0.0001)
+        self.learning_rate.setValue(settings.learning_rate)
+        self.learning_rate.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "learning_rate", v)
+        )
+        form.addRow("Fine-tune learning rate:", self.learning_rate)
+
+        self.num_train_epochs = QDoubleSpinBox()
+        self.num_train_epochs.setRange(0.1, 100.0)
+        self.num_train_epochs.setDecimals(1)
+        self.num_train_epochs.setSingleStep(0.5)
+        self.num_train_epochs.setValue(settings.num_train_epochs)
+        self.num_train_epochs.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "num_train_epochs", v)
+        )
+        form.addRow("Fine-tune epochs:", self.num_train_epochs)
+
+        self.batch_size = QSpinBox()
+        self.batch_size.setRange(1, 64)
+        self.batch_size.setValue(settings.per_device_train_batch_size)
+        self.batch_size.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "per_device_train_batch_size", v)
+        )
+        form.addRow("Fine-tune batch size:", self.batch_size)
+
+        self.grad_accum = QSpinBox()
+        self.grad_accum.setRange(1, 256)
+        self.grad_accum.setValue(settings.gradient_accumulation_steps)
+        self.grad_accum.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "gradient_accumulation_steps", v)
+        )
+        form.addRow("Gradient accumulation:", self.grad_accum)
+
+        self.max_seq_length = QSpinBox()
+        self.max_seq_length.setRange(64, 8192)
+        self.max_seq_length.setSingleStep(64)
+        self.max_seq_length.setValue(settings.max_seq_length)
+        self.max_seq_length.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "max_seq_length", v)
+        )
+        form.addRow("Max sequence length:", self.max_seq_length)
+
+        self.lora_r = QSpinBox()
+        self.lora_r.setRange(1, 256)
+        self.lora_r.setValue(settings.lora_r)
+        self.lora_r.valueChanged.connect(lambda v: setattr(self.window.settings, "lora_r", v))
+        form.addRow("LoRA rank (r):", self.lora_r)
+
+        self.lora_alpha = QSpinBox()
+        self.lora_alpha.setRange(1, 512)
+        self.lora_alpha.setValue(settings.lora_alpha)
+        self.lora_alpha.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "lora_alpha", v)
+        )
+        form.addRow("LoRA alpha:", self.lora_alpha)
+
+        self.lora_dropout = QDoubleSpinBox()
+        self.lora_dropout.setRange(0.0, 0.9)
+        self.lora_dropout.setDecimals(2)
+        self.lora_dropout.setSingleStep(0.05)
+        self.lora_dropout.setValue(settings.lora_dropout)
+        self.lora_dropout.valueChanged.connect(
+            lambda v: setattr(self.window.settings, "lora_dropout", v)
+        )
+        form.addRow("LoRA dropout:", self.lora_dropout)
+
         root.addLayout(form)
 
         root.addWidget(QLabel("System prompt (optional — applies to chat):"))
@@ -180,6 +255,42 @@ class SettingsTab(QWidget):
         self.model_guidance.setObjectName("warning")
         root.addWidget(self.model_guidance)
         self.update_model_guidance()
+
+        root.addWidget(QLabel("<b>Storage</b>"))
+        storage_form = QFormLayout()
+        data_row = QHBoxLayout()
+        self.data_dir_edit = QLineEdit(settings.data_dir)
+        self.data_dir_edit.setPlaceholderText(str(data_dir()))
+        self.data_dir_edit.setToolTip(
+            "Custom data folder for knowledge bases, datasets, adapters and logs. "
+            "Empty = default. Applies on the next launch."
+        )
+        self.data_dir_edit.editingFinished.connect(self._on_data_dir_changed)
+        self.data_dir_browse = QPushButton("Browse")
+        self.data_dir_browse.clicked.connect(self._browse_data_dir)
+        data_row.addWidget(self.data_dir_edit, 1)
+        data_row.addWidget(self.data_dir_browse)
+        storage_form.addRow("Data folder (next launch):", data_row)
+        root.addLayout(storage_form)
+
+        folders_row = QHBoxLayout()
+        for label, getter in (
+            ("Datasets", datasets_dir),
+            ("Knowledge bases", kb_dir),
+            ("Adapters", adapters_dir),
+            ("Logs", lambda: data_dir() / "logs"),
+        ):
+            btn = QPushButton(f"Open {label}")
+            btn.clicked.connect(lambda _=False, g=getter: self._open_folder(g()))
+            folders_row.addWidget(btn)
+        folders_row.addStretch()
+        root.addLayout(folders_row)
+
+        self.last_saved = QLabel()
+        self.last_saved.setObjectName("muted")
+        self.last_saved.setWordWrap(True)
+        self._refresh_last_saved()
+        root.addWidget(self.last_saved)
 
         root.addWidget(QLabel("<b>Detected hardware</b>"))
         self.device_banner = QLabel("Detecting hardware and PyTorch capabilities...")
@@ -331,3 +442,27 @@ class SettingsTab(QWidget):
 
     def _on_download_error(self, kind: str, message: str) -> None:
         self.window.show_error(kind, message, "Model download")
+
+    # -- storage -------------------------------------------------------------------
+    def _on_data_dir_changed(self) -> None:
+        self.window.settings.data_dir = self.data_dir_edit.text().strip()
+
+    def _browse_data_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Choose data folder")
+        if path:
+            self.data_dir_edit.setText(path)
+            self.window.settings.data_dir = path
+
+    def _open_folder(self, path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _refresh_last_saved(self) -> None:
+        s = self.window.settings
+        self.last_saved.setText(
+            f"Last dataset: {s.last_dataset or '—'}\nLast adapter: {s.last_adapter or '—'}"
+        )
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._refresh_last_saved()
+        super().showEvent(event)

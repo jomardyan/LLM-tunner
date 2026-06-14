@@ -7,8 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 LLM-tunner is a **PySide6 desktop app** for customizing open LLMs with your own PDFs:
 add PDFs → build a ChromaDB knowledge base → chat with cited answers (RAG) → optionally
 QLoRA-fine-tune on synthesized Q&A. It is **RAG-first**; fine-tuning is the secondary path.
-Source lives under `src/llm_tunner/` (src layout); entry point is `llm_tunner.app:main`
-(console script `llm-tunner`, windowed `llm-tunner-gui`).
+Source lives under `src/llm_tunner/` (src layout). Entry points: GUI `llm_tunner.app:main`
+(`llm-tunner` / windowed `llm-tunner-gui`) and a **headless CLI** `llm_tunner.cli:main`
+(`llm-tunner-cli`). The CLI is Qt-free: it reuses the `workers.tasks` functions via a
+`ConsoleSignals` shim (progress/log/metric → stderr; results → stdout), so the same core
+pipelines run without a display — keep it that way (no PySide6 imports in `cli.py`).
 
 ## Commands
 
@@ -114,6 +117,12 @@ bare dialogs.
 - **Do not add PySide6 Addons** (Qt PDF/WebEngine, etc.) — the project ships
   Essentials-only deliberately (licensing/size). Anything needing Addons requires explicit
   sign-off.
+- **Durable artifacts / no overwrite:** generated datasets and trained adapters are named
+  with `config.timestamped_name(prefix)` (timestamp + short random suffix) so re-runs never
+  clobber prior outputs. The data directory is `config.data_dir()` (honors `LLM_TUNNER_HOME`);
+  a persisted `Settings.data_dir` is applied at startup in `app.py` by setting that env var
+  *before* any path resolves (and `cli.py` honors `--data-dir`). KBs/datasets/adapters/logs
+  all live under it.
 - Optional dependency extras: `[rag]`, `[train]`, `[gpu]` (bitsandbytes, CUDA-only marker),
   `[all]`, `[dev]`, and `[directml]`/`[openvino]` for iGPU embeddings. The latter two ship
   accelerated `onnxruntime` builds that are **mutually exclusive** with the plain

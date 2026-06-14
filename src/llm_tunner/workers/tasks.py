@@ -611,7 +611,10 @@ def generate_dataset_task(
     if handle.is_stopped():
         return {"cancelled": True}
     rows = to_messages(pairs)
-    path = save_jsonl(rows, "finetune_dataset")
+    # Unique name so each generation is preserved on disk (never overwritten).
+    from ..config import timestamped_name
+
+    path = save_jsonl(rows, timestamped_name("finetune_dataset"))
     return {
         "pairs": len(pairs),
         "path": str(path),

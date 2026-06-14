@@ -21,6 +21,10 @@ _DEFAULTS: dict[str, Any] = {
     "top_k": 4,
     "hf_cache_dir": "",
     "last_kb": "",
+    # Storage. data_dir overrides LLM_TUNNER_HOME on next launch ("" = default/env).
+    "data_dir": "",
+    "last_dataset": "",
+    "last_adapter": "",
     # Generation controls (Chat).
     "temperature": 0.7,
     "top_p": 0.9,
@@ -191,6 +195,31 @@ class Settings:
     @onnx_provider.setter
     def onnx_provider(self, v: str) -> None:
         self.set("onnx_provider", str(v))
+
+    # Storage ----------------------------------------------------------------------
+    @property
+    def data_dir(self) -> str:
+        return str(self.get("data_dir"))
+
+    @data_dir.setter
+    def data_dir(self, v: str) -> None:
+        self.set("data_dir", str(v))
+
+    @property
+    def last_dataset(self) -> str:
+        return str(self.get("last_dataset"))
+
+    @last_dataset.setter
+    def last_dataset(self, v: str) -> None:
+        self.set("last_dataset", str(v))
+
+    @property
+    def last_adapter(self) -> str:
+        return str(self.get("last_adapter"))
+
+    @last_adapter.setter
+    def last_adapter(self, v: str) -> None:
+        self.set("last_adapter", str(v))
 
     # Fine-tuning hyperparameters ---------------------------------------------------
     @property

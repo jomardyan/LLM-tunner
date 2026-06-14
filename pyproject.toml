@@ -82,6 +82,7 @@ dev = [
 
 [project.scripts]
 llm-tunner = "llm_tunner.app:main"
+llm-tunner-cli = "llm_tunner.cli:main"
 
 [project.gui-scripts]
 llm-tunner-gui = "llm_tunner.app:main"

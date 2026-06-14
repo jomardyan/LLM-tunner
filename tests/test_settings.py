@@ -47,6 +47,19 @@ def test_onnx_provider_setting_round_trip(monkeypatch):
     assert s.onnx_provider == "openvino-multi"
 
 
+def test_storage_settings_round_trip(monkeypatch):
+    s = _mem_settings(monkeypatch)
+    assert s.data_dir == ""
+    assert s.last_dataset == ""
+    assert s.last_adapter == ""
+    s.data_dir = "/data/llm"
+    s.last_dataset = "/data/llm/datasets/finetune_dataset_x.jsonl"
+    s.last_adapter = "/data/llm/adapters/pdf_adapter_x"
+    assert s.data_dir == "/data/llm"
+    assert s.last_dataset.endswith("finetune_dataset_x.jsonl")
+    assert s.last_adapter.endswith("pdf_adapter_x")
+
+
 def test_train_hyperparameter_settings_round_trip(monkeypatch):
     s = _mem_settings(monkeypatch)
     assert s.learning_rate == 2e-4

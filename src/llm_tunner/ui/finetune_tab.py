@@ -10,14 +10,11 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDoubleSpinBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -76,8 +73,9 @@ class FineTuneTab(QWidget):
         train_row.addStretch()
         root.addLayout(train_row)
 
-        root.addWidget(QLabel("Hyperparameters"))
-        root.addLayout(self._build_hyperparameter_form())
+        hint = QLabel("Adjust QLoRA hyperparameters (LR, epochs, LoRA rank…) in Settings.")
+        hint.setObjectName("muted")
+        root.addWidget(hint)
 
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -99,91 +97,18 @@ class FineTuneTab(QWidget):
         n = len(self.window.state.documents)
         self.gen_btn.setText(f"1. Generate dataset from PDFs ({n})")
 
-    # -- hyperparameters ---------------------------------------------------------
-    def _build_hyperparameter_form(self) -> QFormLayout:
-        """Editable QLoRA/LoRA hyperparameters, seeded from (and persisted to) settings."""
-        form = QFormLayout()
-        s = self.window.settings
-
-        self.lr = QDoubleSpinBox()
-        self.lr.setRange(0.000001, 1.0)
-        self.lr.setDecimals(6)
-        self.lr.setSingleStep(0.0001)
-        self.lr.setValue(s.learning_rate)
-        self.lr.valueChanged.connect(lambda v: setattr(self.window.settings, "learning_rate", v))
-        form.addRow("Learning rate:", self.lr)
-
-        self.epochs = QDoubleSpinBox()
-        self.epochs.setRange(0.1, 100.0)
-        self.epochs.setDecimals(1)
-        self.epochs.setSingleStep(0.5)
-        self.epochs.setValue(s.num_train_epochs)
-        self.epochs.valueChanged.connect(
-            lambda v: setattr(self.window.settings, "num_train_epochs", v)
-        )
-        form.addRow("Epochs:", self.epochs)
-
-        self.batch = QSpinBox()
-        self.batch.setRange(1, 64)
-        self.batch.setValue(s.per_device_train_batch_size)
-        self.batch.valueChanged.connect(
-            lambda v: setattr(self.window.settings, "per_device_train_batch_size", v)
-        )
-        form.addRow("Batch size:", self.batch)
-
-        self.grad_accum = QSpinBox()
-        self.grad_accum.setRange(1, 256)
-        self.grad_accum.setValue(s.gradient_accumulation_steps)
-        self.grad_accum.valueChanged.connect(
-            lambda v: setattr(self.window.settings, "gradient_accumulation_steps", v)
-        )
-        form.addRow("Gradient accumulation:", self.grad_accum)
-
-        self.max_seq = QSpinBox()
-        self.max_seq.setRange(64, 8192)
-        self.max_seq.setSingleStep(64)
-        self.max_seq.setValue(s.max_seq_length)
-        self.max_seq.valueChanged.connect(
-            lambda v: setattr(self.window.settings, "max_seq_length", v)
-        )
-        form.addRow("Max sequence length:", self.max_seq)
-
-        self.lora_r = QSpinBox()
-        self.lora_r.setRange(1, 256)
-        self.lora_r.setValue(s.lora_r)
-        self.lora_r.valueChanged.connect(lambda v: setattr(self.window.settings, "lora_r", v))
-        form.addRow("LoRA rank (r):", self.lora_r)
-
-        self.lora_alpha = QSpinBox()
-        self.lora_alpha.setRange(1, 512)
-        self.lora_alpha.setValue(s.lora_alpha)
-        self.lora_alpha.valueChanged.connect(
-            lambda v: setattr(self.window.settings, "lora_alpha", v)
-        )
-        form.addRow("LoRA alpha:", self.lora_alpha)
-
-        self.lora_dropout = QDoubleSpinBox()
-        self.lora_dropout.setRange(0.0, 0.9)
-        self.lora_dropout.setDecimals(2)
-        self.lora_dropout.setSingleStep(0.05)
-        self.lora_dropout.setValue(s.lora_dropout)
-        self.lora_dropout.valueChanged.connect(
-            lambda v: setattr(self.window.settings, "lora_dropout", v)
-        )
-        form.addRow("LoRA dropout:", self.lora_dropout)
-
-        return form
-
     def _train_overrides(self) -> dict:
+        """Read the QLoRA hyperparameters from the (Settings-page) persisted values."""
+        s = self.window.settings
         return {
-            "learning_rate": self.lr.value(),
-            "num_train_epochs": self.epochs.value(),
-            "per_device_train_batch_size": self.batch.value(),
-            "gradient_accumulation_steps": self.grad_accum.value(),
-            "max_seq_length": self.max_seq.value(),
-            "lora_r": self.lora_r.value(),
-            "lora_alpha": self.lora_alpha.value(),
-            "lora_dropout": self.lora_dropout.value(),
+            "learning_rate": s.learning_rate,
+            "num_train_epochs": s.num_train_epochs,
+            "per_device_train_batch_size": s.per_device_train_batch_size,
+            "gradient_accumulation_steps": s.gradient_accumulation_steps,
+            "max_seq_length": s.max_seq_length,
+            "lora_r": s.lora_r,
+            "lora_alpha": s.lora_alpha,
+            "lora_dropout": s.lora_dropout,
         }
 
     # -- dataset generation ------------------------------------------------------
@@ -230,6 +155,7 @@ class FineTuneTab(QWidget):
             self.metrics.setText("Dataset generation stopped.")
             return
         self._dataset_rows = result["rows"]
+        self.window.settings.last_dataset = result["path"]
         self.log.appendPlainText(f"Dataset: {result['pairs']} pairs saved to {result['path']}")
         self.metrics.setText(
             f"Dataset: {result['pairs']} pairs from {result['chunks']} chunks in "
@@ -253,11 +179,15 @@ class FineTuneTab(QWidget):
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.log.appendPlainText("Training started…")
+        # Unique name so each trained adapter is kept on disk (never overwritten).
+        from ..config import timestamped_name
+
+        output_name = timestamped_name("pdf_adapter")
         self.window.submit(
             finetune_task,
             self.window.state.base_model,
             self._dataset_rows,
-            "pdf_adapter",
+            output_name,
             self._handle,
             train_overrides=self._train_overrides(),
             on_metric=self._on_metric,
@@ -293,6 +223,7 @@ class FineTuneTab(QWidget):
 
     def _on_trained(self, result: dict) -> None:
         self.window.state.adapter_path = result["adapter_path"]
+        self.window.settings.last_adapter = result["adapter_path"]
         mode = "QLoRA 4-bit" if result["used_4bit"] else "LoRA (no 4-bit)"
         loss_str = f"{result['final_loss']:.4f}" if result["final_loss"] is not None else "N/A"
         self.log.appendPlainText(
