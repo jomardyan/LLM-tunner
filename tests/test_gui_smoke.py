@@ -237,6 +237,28 @@ def test_finetune_passes_hyperparameter_overrides(monkeypatch):
     app.processEvents()
 
 
+def test_settings_parameters_have_tooltips():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from llm_tunner.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    settings_tab = window.settings_tab
+    for name in (
+        "model_combo", "embed_combo", "topk", "temperature", "top_p", "max_new_tokens",
+        "score_threshold", "chunk_size", "chunk_overlap", "onnx_provider",
+        "learning_rate", "num_train_epochs", "batch_size", "grad_accum",
+        "max_seq_length", "lora_r", "lora_alpha", "lora_dropout",
+    ):
+        assert getattr(settings_tab, name).toolTip().strip(), f"{name} is missing a tooltip"
+
+    window.close()
+    app.processEvents()
+
+
 def test_document_metrics_are_aggregated():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

@@ -56,8 +56,10 @@ def extract_pdf(path: str | Path, prefer: str = "auto") -> ExtractedDoc:
             or ``"pypdf"``.
     """
     path = Path(path).expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"PDF not found or not a file: {path}")
+    if path.stat().st_size == 0:
+        raise ValueError(f"PDF is empty: {path}")
 
     if prefer not in {"auto", "docling", "pypdf"}:
         raise ValueError(f"Unknown PDF extraction backend: {prefer}")

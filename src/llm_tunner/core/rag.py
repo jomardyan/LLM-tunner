@@ -266,6 +266,8 @@ class Embedder:
         return self._tokenizer, self._session
 
     def encode(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
         import numpy  # type: ignore
 
         tokenizer, session = self._load()
@@ -397,7 +399,7 @@ class RagIndex:
 
     # -- retrieval ----------------------------------------------------------------
     def retrieve(self, query: str, top_k: int | None = None) -> list[Retrieved]:
-        top_k = top_k or self.config.top_k
+        top_k = max(1, int(top_k or self.config.top_k))
         coll = self._coll()
         if coll.count() == 0:
             return []

@@ -122,6 +122,8 @@ def run_finetune(
         dataset_rows: rows in TRL "messages" format (see :mod:`core.dataset`).
         handle: optional :class:`TrainHandle` to stream metrics / cancel.
     """
+    if not dataset_rows:
+        raise ValueError("Cannot fine-tune on an empty dataset.")
     import torch  # type: ignore
     from peft import LoraConfig as PeftLoraConfig  # type: ignore
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore

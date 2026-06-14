@@ -320,6 +320,10 @@ def build_kb_task(kb_name: str, pdf_paths: list[str], embedding_model: str, *, s
                   chunk_size: int = 512, chunk_overlap: int = 64,
                   onnx_provider: str = "auto") -> dict:
     """Embed and index PDFs, isolating Windows native ML imports from Qt threads."""
+    if not kb_name or not kb_name.strip():
+        raise ValueError("A knowledge-base name is required.")
+    if not pdf_paths:
+        raise ValueError("No PDF files to index — add documents first.")
     if sys.platform == "win32":
         return _build_kb_isolated(
             kb_name,
@@ -473,6 +477,10 @@ def rag_query_task(model_id: str, adapter_path: str | None, kb_name: str, query:
     stack runs in a spawned subprocess, because importing onnxruntime/torch on a Qt
     worker thread access-violates the host process.
     """
+    if not query or not query.strip():
+        raise ValueError("Enter a question to ask.")
+    if not kb_name or not kb_name.strip():
+        raise ValueError("No knowledge base selected for retrieval.")
     if sys.platform == "win32":
         return _run_query_isolated(
             _rag_query_child,
@@ -555,6 +563,8 @@ def plain_chat_task(model_id: str, adapter_path: str | None, query: str,
     On Windows the native inference stack runs in a spawned subprocess, because
     importing torch/transformers on a Qt worker thread access-violates the host process.
     """
+    if not query or not query.strip():
+        raise ValueError("Enter a question to ask.")
     if sys.platform == "win32":
         return _run_query_isolated(
             _plain_chat_child,
@@ -577,6 +587,8 @@ def generate_dataset_task(
     signals,
 ) -> dict:
     """Build a fine-tuning dataset (Q&A pairs) from PDFs and save it as JSONL."""
+    if not kb_pdfs:
+        raise ValueError("No PDF files to build a dataset from — add documents first.")
     from ..core.cancellation import CancelHandle
     from ..core.chunking import chunk_document
     from ..core.dataset import save_jsonl, to_messages
@@ -918,6 +930,10 @@ def finetune_task(model_id: str, dataset_rows: list[dict], output_name: str, han
     the host process after a successful QLoRA save. ``train_overrides`` carries the
     user's hyperparameters (LR, epochs, batch, LoRA rank, …); unset keys keep defaults.
     """
+    if not dataset_rows:
+        raise ValueError("No training data — generate or load a dataset first.")
+    if not model_id or not model_id.strip():
+        raise ValueError("A base model is required for fine-tuning.")
     signals.log.emit(f"Starting fine-tune of {model_id}…")
     if sys.platform == "win32":
         return _finetune_task_isolated(

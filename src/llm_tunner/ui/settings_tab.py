@@ -62,6 +62,9 @@ class SettingsTab(QWidget):
         current_model = self.window.state.base_model
         if current_model and current_model not in self._model_entries:
             self.model_combo.addItem(f"{current_model}  —  custom", current_model)
+        self.model_combo.setToolTip(
+            "Base model used for chat and as the fine-tuning starting point."
+        )
         self._select_current(self.model_combo, current_model)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         form.addRow("Base model:", self.model_combo)
@@ -81,12 +84,17 @@ class SettingsTab(QWidget):
         self.embed_combo = QComboBox()
         self.embed_combo.addItem(f"{DEFAULT_EMBEDDING_MODEL} (fast)", DEFAULT_EMBEDDING_MODEL)
         self.embed_combo.addItem(f"{HIGH_QUALITY_EMBEDDING_MODEL} (quality)", HIGH_QUALITY_EMBEDDING_MODEL)
+        self.embed_combo.setToolTip(
+            "Embedding model for RAG retrieval. Changing it requires rebuilding existing "
+            "knowledge bases (a base is tied to the model it was built with)."
+        )
         self._select_current(self.embed_combo, self.window.state.embedding_model)
         self.embed_combo.currentIndexChanged.connect(self._on_embed_changed)
         form.addRow("Embedding model:", self.embed_combo)
 
         self.topk = QSpinBox()
         self.topk.setRange(1, 20)
+        self.topk.setToolTip("How many retrieved chunks to feed the model as grounding context.")
         self.topk.setValue(self.window.settings.top_k)
         self.topk.valueChanged.connect(self._on_topk_changed)
         form.addRow("Retrieval top-k:", self.topk)
@@ -96,6 +104,9 @@ class SettingsTab(QWidget):
         self.temperature.setRange(0.0, 2.0)
         self.temperature.setSingleStep(0.1)
         self.temperature.setDecimals(2)
+        self.temperature.setToolTip(
+            "Sampling randomness: 0 = deterministic (greedy), higher = more varied/creative."
+        )
         self.temperature.setValue(settings.temperature)
         self.temperature.valueChanged.connect(
             lambda v: setattr(self.window.settings, "temperature", v)
@@ -106,6 +117,10 @@ class SettingsTab(QWidget):
         self.top_p.setRange(0.0, 1.0)
         self.top_p.setSingleStep(0.05)
         self.top_p.setDecimals(2)
+        self.top_p.setToolTip(
+            "Nucleus sampling: sample only from the smallest set of tokens whose "
+            "probabilities sum to this value."
+        )
         self.top_p.setValue(settings.top_p)
         self.top_p.valueChanged.connect(lambda v: setattr(self.window.settings, "top_p", v))
         form.addRow("Top-p:", self.top_p)
@@ -113,6 +128,7 @@ class SettingsTab(QWidget):
         self.max_new_tokens = QSpinBox()
         self.max_new_tokens.setRange(16, 8192)
         self.max_new_tokens.setSingleStep(16)
+        self.max_new_tokens.setToolTip("Maximum number of tokens generated per answer.")
         self.max_new_tokens.setValue(settings.max_new_tokens)
         self.max_new_tokens.valueChanged.connect(
             lambda v: setattr(self.window.settings, "max_new_tokens", v)
@@ -133,7 +149,10 @@ class SettingsTab(QWidget):
         self.chunk_size = QSpinBox()
         self.chunk_size.setRange(128, 4096)
         self.chunk_size.setSingleStep(64)
-        self.chunk_size.setToolTip("Applies to the next knowledge-base build.")
+        self.chunk_size.setToolTip(
+            "Characters per chunk when splitting documents for retrieval. "
+            "Applies to the next knowledge-base build."
+        )
         self.chunk_size.setValue(settings.chunk_size)
         self.chunk_size.valueChanged.connect(
             lambda v: setattr(self.window.settings, "chunk_size", v)
@@ -143,7 +162,10 @@ class SettingsTab(QWidget):
         self.chunk_overlap = QSpinBox()
         self.chunk_overlap.setRange(0, 1024)
         self.chunk_overlap.setSingleStep(16)
-        self.chunk_overlap.setToolTip("Applies to the next knowledge-base build.")
+        self.chunk_overlap.setToolTip(
+            "Characters shared between consecutive chunks to preserve context across "
+            "boundaries. Applies to the next knowledge-base build."
+        )
         self.chunk_overlap.setValue(settings.chunk_overlap)
         self.chunk_overlap.valueChanged.connect(
             lambda v: setattr(self.window.settings, "chunk_overlap", v)
@@ -174,6 +196,10 @@ class SettingsTab(QWidget):
         self.learning_rate.setRange(0.000001, 1.0)
         self.learning_rate.setDecimals(6)
         self.learning_rate.setSingleStep(0.0001)
+        self.learning_rate.setToolTip(
+            "Optimizer step size for the LoRA adapter. ~2e-4 is a common starting point; "
+            "lower is more stable, higher trains faster but can diverge."
+        )
         self.learning_rate.setValue(settings.learning_rate)
         self.learning_rate.valueChanged.connect(
             lambda v: setattr(self.window.settings, "learning_rate", v)
@@ -184,6 +210,9 @@ class SettingsTab(QWidget):
         self.num_train_epochs.setRange(0.1, 100.0)
         self.num_train_epochs.setDecimals(1)
         self.num_train_epochs.setSingleStep(0.5)
+        self.num_train_epochs.setToolTip(
+            "Number of passes over the training dataset. More epochs can overfit small datasets."
+        )
         self.num_train_epochs.setValue(settings.num_train_epochs)
         self.num_train_epochs.valueChanged.connect(
             lambda v: setattr(self.window.settings, "num_train_epochs", v)
@@ -192,6 +221,10 @@ class SettingsTab(QWidget):
 
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 64)
+        self.batch_size.setToolTip(
+            "Training examples processed per step on the device. Raise only if you have "
+            "spare VRAM; otherwise increase gradient accumulation instead."
+        )
         self.batch_size.setValue(settings.per_device_train_batch_size)
         self.batch_size.valueChanged.connect(
             lambda v: setattr(self.window.settings, "per_device_train_batch_size", v)
@@ -200,6 +233,10 @@ class SettingsTab(QWidget):
 
         self.grad_accum = QSpinBox()
         self.grad_accum.setRange(1, 256)
+        self.grad_accum.setToolTip(
+            "Accumulate gradients over this many steps to emulate a larger batch without "
+            "using more VRAM (effective batch = batch size × accumulation)."
+        )
         self.grad_accum.setValue(settings.gradient_accumulation_steps)
         self.grad_accum.valueChanged.connect(
             lambda v: setattr(self.window.settings, "gradient_accumulation_steps", v)
@@ -209,6 +246,10 @@ class SettingsTab(QWidget):
         self.max_seq_length = QSpinBox()
         self.max_seq_length.setRange(64, 8192)
         self.max_seq_length.setSingleStep(64)
+        self.max_seq_length.setToolTip(
+            "Maximum tokens per training example; longer sequences are truncated and use "
+            "more memory."
+        )
         self.max_seq_length.setValue(settings.max_seq_length)
         self.max_seq_length.valueChanged.connect(
             lambda v: setattr(self.window.settings, "max_seq_length", v)
@@ -217,12 +258,20 @@ class SettingsTab(QWidget):
 
         self.lora_r = QSpinBox()
         self.lora_r.setRange(1, 256)
+        self.lora_r.setToolTip(
+            "LoRA rank — the adapter's capacity. Higher is more expressive but larger and "
+            "slower to train; 8–32 is typical."
+        )
         self.lora_r.setValue(settings.lora_r)
         self.lora_r.valueChanged.connect(lambda v: setattr(self.window.settings, "lora_r", v))
         form.addRow("LoRA rank (r):", self.lora_r)
 
         self.lora_alpha = QSpinBox()
         self.lora_alpha.setRange(1, 512)
+        self.lora_alpha.setToolTip(
+            "LoRA scaling factor (the update is scaled by alpha / rank); commonly about "
+            "twice the rank."
+        )
         self.lora_alpha.setValue(settings.lora_alpha)
         self.lora_alpha.valueChanged.connect(
             lambda v: setattr(self.window.settings, "lora_alpha", v)
@@ -233,6 +282,9 @@ class SettingsTab(QWidget):
         self.lora_dropout.setRange(0.0, 0.9)
         self.lora_dropout.setDecimals(2)
         self.lora_dropout.setSingleStep(0.05)
+        self.lora_dropout.setToolTip(
+            "Dropout applied to the LoRA layers during training to reduce overfitting."
+        )
         self.lora_dropout.setValue(settings.lora_dropout)
         self.lora_dropout.valueChanged.connect(
             lambda v: setattr(self.window.settings, "lora_dropout", v)
